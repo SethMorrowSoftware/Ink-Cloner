@@ -147,6 +147,9 @@ What it does:
 - Creates `/etc/default/ink-cloner` for runtime configuration
 - Creates and enables a systemd service: `ink-cloner.service`
 
+> Note: the current service runs Flask-SocketIO on Werkzeug with `allow_unsafe_werkzeug=True` for simple appliance-style deployments.
+> For hardened production deployments, switch to an async worker stack (for example eventlet/gevent) and update the service/runtime accordingly.
+
 Useful commands after install:
 
 ```bash
@@ -416,6 +419,42 @@ export TAG_DETECTION_TIMEOUT_SECONDS=20
 - Ensure stable power supply.
 - Reduce electrical noise near the reader.
 - Verify you are using a tag type compatible with your workflow.
+
+### Service started but site will not load
+
+Run these checks on the Pi:
+
+```bash
+sudo systemctl status ink-cloner --no-pager
+sudo journalctl -u ink-cloner -n 120 --no-pager
+sudo ss -ltnp | grep :5000
+curl -I http://127.0.0.1:5000/
+```
+
+Interpretation:
+
+- `inactive`/`failed` service: app crashed at startup (check journal errors).
+- No listener on `:5000`: app did not bind (wrong env/failed boot).
+- `curl` works locally but not from laptop: network/firewall/routing issue.
+
+If needed, verify configured port:
+
+```bash
+cat /etc/default/ink-cloner
+sudo systemctl restart ink-cloner
+```
+
+Then test from your computer:
+
+```bash
+curl -I http://<pi-ip>:5000/
+```
+
+If this fails while local curl succeeds, check:
+
+- Client and Pi are on same subnet/VLAN.
+- Router/AP client isolation is disabled.
+- Pi firewall (if enabled) allows TCP 5000.
 
 ### Browser cannot connect
 

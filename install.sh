@@ -56,7 +56,8 @@ echo "==> Installing systemd service"
 cat > /etc/systemd/system/$SERVICE_NAME <<EOF
 [Unit]
 Description=Ink Cloner Flask/SocketIO Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -79,7 +80,36 @@ systemctl restart "$SERVICE_NAME"
 echo "==> Service status"
 systemctl --no-pager --full status "$SERVICE_NAME" || true
 
+if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+  echo "==> Service did not start cleanly. Recent logs:"
+  journalctl -u "$SERVICE_NAME" -n 80 --no-pager || true
+  exit 1
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  echo "==> Local health check (with startup retries)"
+  ok=0
+  for attempt in $(seq 1 20); do
+    if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+      echo "Service became inactive during health check"
+      break
+    fi
+    if curl -fsS "http://127.0.0.1:${PORT}/" >/dev/null; then
+      echo "Health check passed"
+      ok=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$ok" -ne 1 ]]; then
+    echo "==> Health check failed after retries. Recent logs:"
+    journalctl -u "$SERVICE_NAME" -n 120 --no-pager -l || true
+    exit 1
+  fi
+fi
+
 echo "\nInstall complete."
 echo "Open: http://<device-ip>:$PORT"
 echo "View logs: sudo journalctl -u $SERVICE_NAME -f"
+echo "If remote clients cannot connect, run: sudo ss -ltnp | grep :$PORT"
 echo "If I2C was newly enabled, reboot once: sudo reboot"
