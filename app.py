@@ -3,7 +3,7 @@ import os
 import time
 from threading import Lock
 
-from flask import Flask, render_template
+from flask import Flask, render_template, Response
 from flask_socketio import SocketIO
 
 import board
@@ -82,6 +82,11 @@ CLEARED_DATA_BLOCKS = [
 @app.route('/')
 def index():
     return render_template('index.html', hw_status=hardware_status)
+
+@app.route('/favicon.ico')
+def favicon():
+    return Response(status=204)
+
 
 
 def run_burn_sequence():

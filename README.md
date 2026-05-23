@@ -127,6 +127,34 @@ If you do not see it, re-check:
 
 ---
 
+## One-command install (recommended)
+
+For Raspberry Pi / Debian-based systems, use the installer script to set everything up automatically:
+
+```bash
+git clone https://github.com/SethMorrowSoftware/Ink-Cloner.git
+cd Ink-Cloner
+sudo bash install.sh
+```
+
+What it does:
+
+- Installs OS dependencies (`python3-venv`, `pip`, `git`, `i2c-tools`)
+- Enables I2C (via `raspi-config` when available + `dtparam=i2c_arm=on`)
+- Adds your user to the `i2c` group
+- Installs the app to `/opt/ink-cloner`
+- Creates a virtualenv and installs Python dependencies
+- Creates `/etc/default/ink-cloner` for runtime configuration
+- Creates and enables a systemd service: `ink-cloner.service`
+
+Useful commands after install:
+
+```bash
+sudo systemctl status ink-cloner
+sudo systemctl restart ink-cloner
+sudo journalctl -u ink-cloner -f
+```
+
 ## Software installation
 
 From the project directory:
