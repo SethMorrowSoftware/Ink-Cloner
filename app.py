@@ -14,12 +14,10 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-me-in-production')
 socketio = SocketIO(app, cors_allowed_origins=os.getenv('CORS_ALLOWED_ORIGINS', '*'))
 
-# Runtime tuning
 TAG_DETECTION_TIMEOUT_SECONDS = float(os.getenv('TAG_DETECTION_TIMEOUT_SECONDS', '10'))
 TAG_DETECTION_POLL_SECONDS = float(os.getenv('TAG_DETECTION_POLL_SECONDS', '0.2'))
 WRITE_BLOCK_RESPONSE_LENGTH = int(os.getenv('WRITE_BLOCK_RESPONSE_LENGTH', '10'))
 
-# Global state
 pn532 = None
 hardware_status = 'Disconnected'
 burn_lock = Lock()
@@ -27,6 +25,10 @@ burn_lock = Lock()
 
 def log_to_web(msg: str) -> None:
     socketio.emit('log_update', {'data': msg})
+
+
+def update_ui_status() -> None:
+    socketio.emit('hw_status_update', {'status': hardware_status})
 
 
 def initialize_hardware() -> None:
@@ -41,7 +43,6 @@ def initialize_hardware() -> None:
         hardware_status = f'Error: {exc}'
 
 
-# Master Payload Configurations
 TARGET_UID = bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32])
 CLEARED_DATA_BLOCKS = [
     bytes([0x29, 0x50, 0x4E, 0x44]), bytes([0x00, 0x01, 0xA3, 0x42]),
@@ -83,15 +84,48 @@ CLEARED_DATA_BLOCKS = [
 def index():
     return render_template('index.html', hw_status=hardware_status)
 
+
 @app.route('/favicon.ico')
 def favicon():
     return Response(status=204)
 
 
+def poll_for_tag():
+    uid = None
+    timeout = time.time() + TAG_DETECTION_TIMEOUT_SECONDS
+    while time.time() < timeout:
+        try:
+            uid = pn532.read_passive_target(timeout=TAG_DETECTION_POLL_SECONDS)
+        except Exception as exc:
+            log_to_web(f'⚠️ Reader poll error: {exc}')
+            uid = None
+        if uid is not None:
+            break
+        time.sleep(0.05)
+    return uid
+
+
+def run_tag_scan():
+    if not pn532:
+        log_to_web('❌ Hardware not connected. Check wiring and restart service.')
+        socketio.emit('action_complete', {'status': 'fail'})
+        return
+
+    log_to_web('🔎 Waiting for tag/card near antenna...')
+    uid = poll_for_tag()
+    if uid is None:
+        log_to_web('❌ Timeout: No tag/card detected.')
+        socketio.emit('action_complete', {'status': 'fail'})
+        return
+
+    detected_uid_str = '-'.join([f'{x:02X}' for x in uid])
+    log_to_web(f'✅ Tag/Card detected: UID {detected_uid_str}')
+    socketio.emit('action_complete', {'status': 'success'})
+
 
 def run_burn_sequence():
     if not burn_lock.acquire(blocking=False):
-        log_to_web('⚠️ Another burn is already in progress. Please wait.')
+        log_to_web('⚠️ Another operation is already in progress. Please wait.')
         socketio.emit('action_complete', {'status': 'busy'})
         return
 
@@ -102,19 +136,7 @@ def run_burn_sequence():
             return
 
         log_to_web('⏳ [STEP 1/3] Waiting for Magic Sticker placement...')
-
-        uid = None
-        timeout = time.time() + TAG_DETECTION_TIMEOUT_SECONDS
-        while time.time() < timeout:
-            try:
-                uid = pn532.read_passive_target(timeout=TAG_DETECTION_POLL_SECONDS)
-            except Exception as exc:
-                log_to_web(f'⚠️ Reader poll error: {exc}')
-                uid = None
-            if uid is not None:
-                break
-            time.sleep(0.05)
-
+        uid = poll_for_tag()
         if uid is None:
             log_to_web('❌ Timeout: No tag detected on the reader panel.')
             socketio.emit('action_complete', {'status': 'fail'})
@@ -151,8 +173,23 @@ def run_burn_sequence():
 
 @socketio.on('start_burn')
 def handle_burn():
-    log_to_web('🚀 Initializing System Protocol...')
+    log_to_web('🚀 Initializing Ink Clone Protocol...')
     socketio.start_background_task(run_burn_sequence)
+
+
+@socketio.on('scan_tag')
+def handle_scan_tag():
+    if burn_lock.locked():
+        log_to_web('⚠️ Busy: wait for current operation to finish before scanning.')
+        socketio.emit('action_complete', {'status': 'busy'})
+        return
+
+    socketio.start_background_task(run_tag_scan)
+
+
+@socketio.on('refresh_hw_status')
+def handle_refresh_hw_status():
+    update_ui_status()
 
 
 initialize_hardware()
