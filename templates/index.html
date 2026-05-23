@@ -1,0 +1,71 @@
+ 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Photobooth Ink Tag Utility</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socketio/4.0.1/socketio.js"></script>
+    <style>
+        body { background-color: #f8f9fa; font-family: system-ui, -apple-system, sans-serif; }
+        .console-box { background-color: #1e1e1e; color: #39ff14; font-family: monospace; height: 250px; overflow-y: scroll; padding: 15px; border-radius: 6px; border: 2px solid #333; }
+        .big-btn { padding: 25px; font-size: 1.5rem; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
+    </style>
+</head>
+<body>
+
+<div class="container py-5" style="max-width: 650px;">
+    <div class="card shadow-sm mb-4">
+        <div class="card-body text-center bg-dark text-white rounded-top">
+            <h2 class="m-0">📸 Photobooth Ink System</h2>
+            <p class="text-muted m-0 mt-1">Tag Customization Console</p>
+        </div>
+        <div class="card-body bg-white">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <span>Hardware Status:</span>
+                {% if hw_status == "Connected" %}
+                    <span class="badge bg-success">PN532 Reader Active</span>
+                {% else %}
+                    <span class="badge bg-danger">{{ hw_status }}</span>
+                {% endif %}
+            </div>
+
+            <button id="burnBtn" class="btn btn-primary w-100 big-btn shadow mb-4">
+                🔥 Burn New Roll Tag
+            </button>
+
+            <h6 class="text-secondary">Real-Time Process Logs:</h6>
+            <div id="console" class="console-box">
+                [System Idle] Ready for next operation...<br>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const socket = io();
+    const burnBtn = document.getElementById('burnBtn');
+    const consoleBox = document.getElementById('console');
+
+    burnBtn.addEventListener('click', () => {
+        burnBtn.disabled = true;
+        burnBtn.className = "btn btn-warning w-100 big-btn text-dark";
+        burnBtn.innerText = "⚡ Burning in Progress...";
+        consoleBox.innerHTML = ""; // Clear log history
+        socket.emit('start_burn');
+    });
+
+    socket.on('log_update', (msg) => {
+        consoleBox.innerHTML += msg.data + "<br>";
+        consoleBox.scrollTop = consoleBox.scrollHeight;
+    });
+
+    socket.on('action_complete', (msg) => {
+        burnBtn.disabled = false;
+        burnBtn.className = "btn btn-primary w-100 big-btn shadow";
+        burnBtn.innerText = "🔥 Burn New Roll Tag";
+    });
+</script>
+</body>
+</html>
