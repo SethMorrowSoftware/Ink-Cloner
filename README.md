@@ -227,6 +227,151 @@ Concurrency behavior:
 - Confirm the process has permission to access I2C.
 - Run `i2cdetect -y 1` and verify PN532 appears.
 
+### `i2cdetect` says `/dev/i2c-*` does not exist
+
+If you get errors like:
+
+```bash
+Error: Could not open file `/dev/i2c-1` ... No such file or directory
+```
+
+it means the Linux I2C device interface is not currently available.
+
+Run these checks in order:
+
+1. Confirm the kernel modules are loaded:
+
+```bash
+sudo modprobe i2c-dev
+automod=$(lsmod | awk '/i2c_dev|i2c_bcm2708|i2c_bcm2835/{print $1}')
+echo "$automod"
+```
+
+2. Ensure I2C is enabled in boot config:
+
+```bash
+grep -E '^dtparam=i2c_arm=on' /boot/config.txt /boot/firmware/config.txt 2>/dev/null
+```
+
+If not present, add this line to the active config file:
+
+```text
+dtparam=i2c_arm=on
+```
+
+Then reboot.
+
+3. Re-enable via raspi-config (if on Raspberry Pi OS):
+
+```bash
+sudo raspi-config
+# Interface Options -> I2C -> Enable
+sudo reboot
+```
+
+4. Verify device nodes after reboot:
+
+```bash
+ls -l /dev/i2c*
+```
+
+You should see at least `/dev/i2c-1` on most Raspberry Pi models.
+
+5. Install tools if needed and scan all available buses:
+
+```bash
+sudo apt-get install -y i2c-tools
+sudo i2cdetect -l
+```
+
+Use the bus number shown by `i2cdetect -l` (not always `1` on non-Pi systems):
+
+```bash
+sudo i2cdetect -y <BUS_NUMBER>
+```
+
+6. If still missing, check hardware/platform support:
+
+- On some images/kernels, I2C is disabled by default and requires device-tree overlay changes.
+- In containers/VMs, `/dev/i2c-*` may not be passed through.
+- On BeagleBone/Jetson/other SBCs, bus numbering and pinmux setup are different.
+
+### SSH warning: `known_hosts` Permission denied
+
+If you see:
+
+```text
+hostkeys_find_by_key_hostfile ... /home/<user>/.ssh/known_hosts: Permission denied
+Failed to add the host to the list of known hosts
+```
+
+fix ownership/permissions on your **local client** machine:
+
+```bash
+mkdir -p ~/.ssh
+sudo chown -R "$USER":"$USER" ~/.ssh
+chmod 700 ~/.ssh
+touch ~/.ssh/known_hosts
+chmod 600 ~/.ssh/known_hosts
+```
+
+Then reconnect:
+
+```bash
+ssh tech@192.168.0.79
+```
+
+### `venv`/`pip` permission denied after using `sudo`
+
+Your logs show this exact root cause:
+
+- `sudo git clone ...` created a **root-owned repo**.
+- `sudo python3 -m venv .venv` created a **root-owned virtualenv**.
+- Running `pip` as normal user inside that venv then fails with permission denied.
+
+#### Fastest clean fix
+
+```bash
+cd ~
+sudo rm -rf ~/Ink-Cloner
+git clone https://github.com/SethMorrowSoftware/Ink-Cloner.git
+cd Ink-Cloner
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install flask flask-socketio adafruit-blinka adafruit-circuitpython-pn532
+```
+
+#### Alternative (repair existing folder)
+
+```bash
+cd ~
+sudo chown -R tech:tech Ink-Cloner
+cd Ink-Cloner
+rm -rf .venv
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install flask flask-socketio adafruit-blinka adafruit-circuitpython-pn532
+```
+
+#### Important runtime rule
+
+Do **not** run the app with `sudo python app.py` when using a user venv.
+Run it as:
+
+```bash
+source .venv/bin/activate
+python app.py
+```
+
+If I2C permissions block access later, add your user to the `i2c` group and re-login:
+
+```bash
+sudo usermod -aG i2c tech
+# log out and back in
+```
+
 ### Timeout: no tag detected
 
 - Reposition the tag on the antenna.
