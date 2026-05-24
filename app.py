@@ -134,6 +134,10 @@ def run_get_firmware():
 
 
 def run_read_classic_block(block: int = 4):
+    if block < 0 or block > 63:
+        log_to_web('❌ Block out of range. Use a value from 0 to 63.')
+        socketio.emit('action_complete', {'status': 'fail'})
+        return
     if not ensure_reader():
         return
     log_to_web(f'📥 Classic read requested for block {block}. Present tag...')
@@ -156,9 +160,18 @@ def run_read_classic_block(block: int = 4):
 
 
 def run_write_classic_block(block: int = 4, payload_hex: str = '000102030405060708090A0B0C0D0E0F'):
+    if block < 0 or block > 63:
+        log_to_web('❌ Block out of range. Use a value from 0 to 63.')
+        socketio.emit('action_complete', {'status': 'fail'})
+        return
     if not ensure_reader():
         return
-    payload = bytes.fromhex(payload_hex)
+    try:
+        payload = bytes.fromhex(payload_hex)
+    except ValueError:
+        log_to_web('❌ Classic write payload must be valid hex.')
+        socketio.emit('action_complete', {'status': 'fail'})
+        return
     if len(payload) != 16:
         log_to_web('❌ Classic write requires exactly 16 bytes payload.')
         socketio.emit('action_complete', {'status': 'fail'})
