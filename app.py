@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+import json
 import os
 import time
 from threading import Lock
+from typing import Optional
 
-from flask import Flask, render_template, Response
+from flask import Flask, Response, render_template
 from flask_socketio import SocketIO
 
 import board
@@ -13,22 +15,24 @@ from adafruit_pn532.i2c import PN532_I2C
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-me-in-production')
 socketio = SocketIO(app, cors_allowed_origins=os.getenv('CORS_ALLOWED_ORIGINS', '*'))
-
 TAG_DETECTION_TIMEOUT_SECONDS = float(os.getenv('TAG_DETECTION_TIMEOUT_SECONDS', '10'))
 TAG_DETECTION_POLL_SECONDS = float(os.getenv('TAG_DETECTION_POLL_SECONDS', '0.2'))
 WRITE_BLOCK_RESPONSE_LENGTH = int(os.getenv('WRITE_BLOCK_RESPONSE_LENGTH', '10'))
+DEFAULT_KEY_A = bytes.fromhex(os.getenv('MIFARE_DEFAULT_KEY_A_HEX', 'FFFFFFFFFFFF'))
 
 pn532 = None
 hardware_status = 'Disconnected'
-burn_lock = Lock()
+op_lock = Lock()
+
+TARGET_UID = bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32])
+CLEARED_DATA_BLOCKS = [
+    bytes([0x29, 0x50, 0x4E, 0x44]), bytes([0x00, 0x01, 0xA3, 0x42]),
+    bytes([0x45, 0x02, 0x00, 0x00]), bytes([0xA1, 0x10, 0x13, 0x17]),
+] + [bytes([0x00, 0x00, 0x00, 0x00]) for _ in range(60)]
 
 
-def log_to_web(msg: str) -> None:
-    socketio.emit('log_update', {'data': msg})
-
-
-def update_ui_status() -> None:
-    socketio.emit('hw_status_update', {'status': hardware_status})
+def log_to_web(msg: str) -> None: socketio.emit('log_update', {'data': msg})
+def update_ui_status() -> None: socketio.emit('hw_status_update', {'status': hardware_status})
 
 
 def initialize_hardware() -> None:
@@ -43,162 +47,184 @@ def initialize_hardware() -> None:
         hardware_status = f'Error: {exc}'
 
 
-TARGET_UID = bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32])
-CLEARED_DATA_BLOCKS = [
-    bytes([0x29, 0x50, 0x4E, 0x44]), bytes([0x00, 0x01, 0xA3, 0x42]),
-    bytes([0x45, 0x02, 0x00, 0x00]), bytes([0xA1, 0x10, 0x13, 0x17]),
-    bytes([0xF2, 0x10, 0xC0, 0x00]), bytes([0x9E, 0x01, 0x51, 0x02]),
-    bytes([0x58, 0x02, 0x00, 0x00]), bytes([0x00, 0x00, 0x00, 0x00]),
-    bytes([0x01, 0xA3, 0x42, 0xFF]), bytes([0x00, 0x00, 0x00, 0x00]),
-    bytes([0x00, 0x00, 0x00, 0x00]), bytes([0x00, 0x00, 0x00, 0x00]),
-    bytes([0x00, 0x00, 0x00, 0x00]), bytes([0x00, 0x00, 0x00, 0x00]),
-    bytes([0x00, 0x00, 0x00, 0x00]), bytes([0x00, 0x00, 0x00, 0x00]),
-    bytes([0x25, 0x67, 0x45, 0x9D]), bytes([0x96, 0x10, 0x5F, 0xD6]),
-    bytes([0x18, 0xA9, 0x6A, 0x74]), bytes([0x26, 0x67, 0x2D, 0x21]),
-    bytes([0xC9, 0xA8, 0x72, 0x5E]), bytes([0xFE, 0x30, 0x75, 0x26]),
-    bytes([0xFE, 0x10, 0x24, 0x9F]), bytes([0x93, 0x43, 0x08, 0xE5]),
-    bytes([0xA3, 0x60, 0x8E, 0xF3]), bytes([0x4B, 0x1F, 0x2E, 0x66]),
-    bytes([0xE3, 0x84, 0x08, 0xC9]), bytes([0xC9, 0xA6, 0x47, 0x39]),
-    bytes([0x38, 0x02, 0x88, 0xBF]), bytes([0x5B, 0xBE, 0x48, 0xCB]),
-    bytes([0x89, 0x53, 0xBC, 0x26]), bytes([0x4F, 0x07, 0x02, 0x6B]),
-    bytes([0x98, 0xFB, 0xF7, 0xAD]), bytes([0x6F, 0xD1, 0x38, 0xB0]),
-    bytes([0x34, 0xA6, 0x29, 0x83]), bytes([0x81, 0x21, 0x13, 0x81]),
-    bytes([0xA7, 0x8A, 0x02, 0xEC]), bytes([0xA2, 0x25, 0xA5, 0x16]),
-    bytes([0x3F, 0x0A, 0x56, 0x6A]), bytes([0x0D, 0x43, 0x14, 0xF7]),
-    bytes([0xAF, 0x8E, 0x59, 0x8A]), bytes([0x0C, 0x35, 0x3D, 0x93]),
-    bytes([0x37, 0x3E, 0x34, 0x5E]), bytes([0x5D, 0xBD, 0x59, 0x3B]),
-    bytes([0xA0, 0x7B, 0x70, 0x79]), bytes([0x4E, 0xC6, 0x14, 0xF7]),
-    bytes([0xC3, 0x9F, 0x1A, 0x5A]), bytes([0xE2, 0x56, 0xAF, 0xDA]),
-    bytes([0x33, 0x1F, 0xEB, 0x02]), bytes([0xFF, 0x00, 0xAE, 0x76]),
-    bytes([0x60, 0x43, 0xAB, 0x79]), bytes([0x07, 0xF3, 0xE4, 0x3E]),
-    bytes([0x83, 0x9B, 0xDF, 0x4D]), bytes([0xA5, 0x17, 0x5D, 0x2A]),
-    bytes([0x11, 0xEC, 0x9A, 0x9F]), bytes([0x8A, 0xE6, 0xEE, 0x60]),
-    bytes([0x63, 0x1A, 0x53, 0x9F]), bytes([0xF1, 0xFD, 0x34, 0x1D]),
-    bytes([0xD5, 0x77, 0x68, 0xB2]), bytes([0xDA, 0xAA, 0x0D, 0x83]),
-    bytes([0x7C, 0x7C, 0xC6, 0xBF]), bytes([0xE3, 0x7B, 0xD3, 0x00]),
-    bytes([0x00, 0x00, 0x00, 0x00]), bytes([0x00, 0x00, 0x00, 0x00])
-]
+def ensure_reader() -> bool:
+    if not pn532:
+        log_to_web('❌ PN532 unavailable.'); socketio.emit('action_complete', {'status': 'fail'}); return False
+    return True
 
 
-@app.route('/')
-def index():
-    return render_template('index.html', hw_status=hardware_status)
-
-
-@app.route('/favicon.ico')
-def favicon():
-    return Response(status=204)
-
-
-def poll_for_tag():
-    uid = None
+def poll_for_tag() -> Optional[bytes]:
     timeout = time.time() + TAG_DETECTION_TIMEOUT_SECONDS
     while time.time() < timeout:
-        try:
-            uid = pn532.read_passive_target(timeout=TAG_DETECTION_POLL_SECONDS)
-        except Exception as exc:
-            log_to_web(f'⚠️ Reader poll error: {exc}')
-            uid = None
+        uid = pn532.read_passive_target(timeout=TAG_DETECTION_POLL_SECONDS)
         if uid is not None:
-            break
+            return uid
         time.sleep(0.05)
-    return uid
+    return None
+
+
+def uid_str(uid: bytes) -> str: return '-'.join(f'{x:02X}' for x in uid)
+def validate_block(block: int) -> bool: return 0 <= block <= 63
+
+def auth(uid: bytes, block: int) -> bool:
+    return bool(pn532.mifare_classic_authenticate_block(uid, block, 0x60, DEFAULT_KEY_A))
 
 
 def run_tag_scan():
-    if not pn532:
-        log_to_web('❌ Hardware not connected. Check wiring and restart service.')
-        socketio.emit('action_complete', {'status': 'fail'})
-        return
-
-    log_to_web('🔎 Waiting for tag/card near antenna...')
+    if not ensure_reader(): return
     uid = poll_for_tag()
-    if uid is None:
-        log_to_web('❌ Timeout: No tag/card detected.')
-        socketio.emit('action_complete', {'status': 'fail'})
-        return
+    if not uid: log_to_web('❌ No tag detected.'); socketio.emit('action_complete', {'status': 'fail'}); return
+    log_to_web(f'✅ UID {uid_str(uid)}'); socketio.emit('action_complete', {'status': 'success'})
 
-    detected_uid_str = '-'.join([f'{x:02X}' for x in uid])
-    log_to_web(f'✅ Tag/Card detected: UID {detected_uid_str}')
+
+def run_get_firmware():
+    if not ensure_reader(): return
+    ic, ver, rev, support = pn532.firmware_version
+    log_to_web(f'ℹ️ PN532 IC=0x{ic:02X} version={ver}.{rev} support=0x{support:02X}')
     socketio.emit('action_complete', {'status': 'success'})
 
 
+def run_read_block(block: int = 4):
+    if not validate_block(block): log_to_web('❌ Invalid block (0..63).'); socketio.emit('action_complete', {'status': 'fail'}); return
+    if not ensure_reader(): return
+    uid = poll_for_tag()
+    if not uid: log_to_web('❌ No tag detected.'); socketio.emit('action_complete', {'status': 'fail'}); return
+    if not auth(uid, block): log_to_web('❌ Auth failed.'); socketio.emit('action_complete', {'status': 'fail'}); return
+    data = pn532.mifare_classic_read_block(block)
+    log_to_web(f'✅ Read block {block}: {bytes(data).hex().upper() if data else "READ_FAIL"}')
+    socketio.emit('action_complete', {'status': 'success' if data else 'fail'})
+
+
+def run_write_block(block: int, data_hex: str, verify: bool = True):
+    if not validate_block(block): log_to_web('❌ Invalid block (0..63).'); socketio.emit('action_complete', {'status': 'fail'}); return
+    try: payload = bytes.fromhex(data_hex)
+    except ValueError: log_to_web('❌ Invalid hex payload.'); socketio.emit('action_complete', {'status': 'fail'}); return
+    if len(payload) != 16: log_to_web('❌ Payload must be 16 bytes.'); socketio.emit('action_complete', {'status': 'fail'}); return
+    if not ensure_reader(): return
+    uid = poll_for_tag()
+    if not uid or not auth(uid, block): log_to_web('❌ Tag/auth failed.'); socketio.emit('action_complete', {'status': 'fail'}); return
+    if not pn532.mifare_classic_write_block(block, payload): log_to_web('❌ Write failed.'); socketio.emit('action_complete', {'status': 'fail'}); return
+    if verify:
+        rb = pn532.mifare_classic_read_block(block)
+        if not rb or bytes(rb) != payload: log_to_web('❌ Verify failed.'); socketio.emit('action_complete', {'status': 'fail'}); return
+    log_to_web(f'✅ Wrote block {block} ({"verified" if verify else "no verify"})')
+    socketio.emit('action_complete', {'status': 'success'})
+
+
+def run_dump(start: int = 0, end: int = 15):
+    if not ensure_reader(): return
+    if start < 0 or end > 63 or start > end: log_to_web('❌ Invalid dump range.'); socketio.emit('action_complete', {'status': 'fail'}); return
+    uid = poll_for_tag()
+    if not uid: log_to_web('❌ No tag detected.'); socketio.emit('action_complete', {'status': 'fail'}); return
+    result = {'uid': uid_str(uid), 'blocks': {}}
+    for b in range(start, end + 1):
+        if not auth(uid, b): result['blocks'][str(b)] = 'AUTH_FAIL'; continue
+        d = pn532.mifare_classic_read_block(b)
+        result['blocks'][str(b)] = bytes(d).hex().upper() if d else 'READ_FAIL'
+    log_to_web('✅ Dump complete'); log_to_web(json.dumps(result))
+    socketio.emit('action_complete', {'status': 'success'})
+
+
+def run_reconnect():
+    initialize_hardware(); update_ui_status()
+    ok = hardware_status == 'Connected'
+    log_to_web('✅ Reader reconnected.' if ok else f'❌ Reconnect failed: {hardware_status}')
+    socketio.emit('action_complete', {'status': 'success' if ok else 'fail'})
+
+
 def run_burn_sequence():
-    if not burn_lock.acquire(blocking=False):
-        log_to_web('⚠️ Another operation is already in progress. Please wait.')
-        socketio.emit('action_complete', {'status': 'busy'})
+    if not ensure_reader():
         return
 
-    try:
-        if not pn532:
-            log_to_web('❌ Hardware not connected. Check wiring and restart service.')
-            socketio.emit('action_complete', {'status': 'fail'})
-            return
+    log_to_web('🚀 Ink Clone Protocol started.')
+    log_to_web('ℹ️ Preparing PN532 session and validating reader state...')
+    log_to_web('⏳ [STEP 1/5] Waiting for ink tag placement on antenna...')
 
-        log_to_web('⏳ [STEP 1/3] Waiting for Magic Sticker placement...')
-        uid = poll_for_tag()
-        if uid is None:
-            log_to_web('❌ Timeout: No tag detected on the reader panel.')
-            socketio.emit('action_complete', {'status': 'fail'})
-            return
-
-        detected_uid_str = '-'.join([f'{x:02X}' for x in uid])
-        log_to_web(f'🎯 Tag Detected! (Hardware Factory UID: {detected_uid_str})')
-        log_to_web('✍️ [STEP 2/3] Writing 64 high-capacity data blocks...')
-
-        failed_blocks = []
-        for block_idx, block_bytes in enumerate(CLEARED_DATA_BLOCKS):
-            try:
-                write_payload = bytes([0x42, 0x21, block_idx]) + block_bytes
-                pn532.call_function(0x42, params=write_payload, response_length=WRITE_BLOCK_RESPONSE_LENGTH)
-            except Exception as exc:
-                failed_blocks.append((block_idx, str(exc)))
-                log_to_web(f'⚠️ Warning: Skip on block {block_idx} ({exc})')
-
-        log_to_web('🔐 [STEP 3/3] Sending Gen2 backdoor handshake to spoof master UID...')
-        magic_command = bytes([0x42, 0xB4, 0x00]) + TARGET_UID
-        pn532.call_function(0x42, params=magic_command, response_length=WRITE_BLOCK_RESPONSE_LENGTH)
-
-        if failed_blocks:
-            failed_idxs = ', '.join(str(idx) for idx, _ in failed_blocks)
-            log_to_web(f'⚠️ Completed with warnings. Blocks skipped: {failed_idxs}')
-        log_to_web('✅ SUCCESS: Ink tag cloned and reset to 100% capacity!')
-        socketio.emit('action_complete', {'status': 'success'})
-    except Exception as exc:
-        log_to_web(f'❌ Burn failed unexpectedly: {exc}')
+    uid = poll_for_tag()
+    if not uid:
+        log_to_web('❌ Timeout: No tag detected within configured detection window.')
         socketio.emit('action_complete', {'status': 'fail'})
-    finally:
-        burn_lock.release()
+        return
 
+    log_to_web(f'🎯 Tag detected: UID {uid_str(uid)}')
+    log_to_web(f'ℹ️ Tag UID length: {len(uid)} bytes')
+    log_to_web('✍️ [STEP 2/5] Starting clone data write pass (64 blocks)...')
+
+    failed = []
+    wrote = 0
+    milestones = {1, 2, 3, 4, 8, 16, 24, 32, 40, 48, 56, 64}
+
+    for i, block_bytes in enumerate(CLEARED_DATA_BLOCKS):
+        try:
+            pn532.call_function(
+                0x42,
+                params=bytes([0x42, 0x21, i]) + block_bytes,
+                response_length=WRITE_BLOCK_RESPONSE_LENGTH,
+            )
+            wrote += 1
+            current = i + 1
+            if current in milestones:
+                log_to_web(f'   • Write progress: {current}/64 blocks complete')
+        except Exception as exc:
+            failed.append(i)
+            log_to_web(f'⚠️ Block {i} skipped due to write error: {exc}')
+
+    log_to_web('🔐 [STEP 3/5] Applying Gen2 UID handshake payload...')
+    pn532.call_function(
+        0x42,
+        params=bytes([0x42, 0xB4, 0x00]) + TARGET_UID,
+        response_length=WRITE_BLOCK_RESPONSE_LENGTH,
+    )
+
+    log_to_web('🧪 [STEP 4/5] Performing post-write summary checks...')
+    log_to_web(f'ℹ️ Blocks attempted: 64 | blocks written: {wrote} | blocks skipped: {len(failed)}')
+
+    if failed:
+        failed_str = ', '.join(str(i) for i in failed)
+        log_to_web(f'⚠️ Clone finished with warnings. Skipped blocks: {failed_str}')
+    else:
+        log_to_web('✅ Clone blocks written with no skipped blocks.')
+
+    log_to_web('🏁 [STEP 5/5] Finalizing operation and notifying UI...')
+    log_to_web('✅ SUCCESS: Ink clone burn completed.')
+    socketio.emit('action_complete', {'status': 'success'})
+
+
+def with_lock(fn, *a):
+    if not op_lock.acquire(blocking=False): log_to_web('⚠️ Busy.'); socketio.emit('action_complete', {'status': 'busy'}); return
+    try: fn(*a)
+    except Exception as exc: log_to_web(f'❌ {exc}'); socketio.emit('action_complete', {'status': 'fail'})
+    finally: op_lock.release()
+
+
+@app.route('/')
+def index(): return render_template('index.html', hw_status=hardware_status)
+
+@app.route('/favicon.ico')
+def favicon(): return Response(status=204)
 
 @socketio.on('start_burn')
-def handle_burn():
-    log_to_web('🚀 Initializing Ink Clone Protocol...')
-    socketio.start_background_task(run_burn_sequence)
-
-
+def handle_burn(): socketio.start_background_task(with_lock, run_burn_sequence)
 @socketio.on('scan_tag')
-def handle_scan_tag():
-    if burn_lock.locked():
-        log_to_web('⚠️ Busy: wait for current operation to finish before scanning.')
-        socketio.emit('action_complete', {'status': 'busy'})
-        return
-
-    socketio.start_background_task(run_tag_scan)
-
-
+def handle_scan_tag(): socketio.start_background_task(with_lock, run_tag_scan)
+@socketio.on('get_firmware')
+def handle_fw(): socketio.start_background_task(with_lock, run_get_firmware)
+@socketio.on('reconnect_reader')
+def handle_reconnect(): socketio.start_background_task(with_lock, run_reconnect)
+@socketio.on('read_classic_block')
+def handle_read(payload): socketio.start_background_task(with_lock, run_read_block, int((payload or {}).get('block', 4)))
+@socketio.on('write_classic_block')
+def handle_write(payload):
+    p = payload or {}
+    socketio.start_background_task(with_lock, run_write_block, int(p.get('block', 4)), str(p.get('data_hex', '00'*16)), bool(p.get('verify', True)))
+@socketio.on('dump_classic')
+def handle_dump(payload):
+    p = payload or {}
+    socketio.start_background_task(with_lock, run_dump, int(p.get('start_block', 0)), int(p.get('end_block', 15)))
 @socketio.on('refresh_hw_status')
-def handle_refresh_hw_status():
-    update_ui_status()
-
+def handle_refresh_hw_status(): update_ui_status()
 
 initialize_hardware()
 
 if __name__ == '__main__':
-    socketio.run(
-        app,
-        host='0.0.0.0',
-        port=int(os.getenv('PORT', '5000')),
-        debug=False,
-        allow_unsafe_werkzeug=True,
-    )
+    socketio.run(app, host='0.0.0.0', port=int(os.getenv('PORT', '5000')), debug=False, allow_unsafe_werkzeug=True)
