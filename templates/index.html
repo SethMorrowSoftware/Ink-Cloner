@@ -1,177 +1,190 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Photobooth Ink Ops Console</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ink Ops Professional Console</title>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <style>
         :root {
             --bg: #070b14;
-            --bg-2: #0f172a;
-            --card: #0b1220;
-            --surface: #111a2d;
+            --bg2: #111827;
+            --card: #0f172a;
+            --surface: #111b31;
+            --border: rgba(148, 163, 184, 0.25);
             --text: #e2e8f0;
             --muted: #94a3b8;
-            --cyan: #22d3ee;
-            --violet: #8b5cf6;
-            --green: #22c55e;
-            --yellow: #f59e0b;
-            --red: #ef4444;
-            --border: rgba(148, 163, 184, 0.2);
+            --primary: #4f46e5;
+            --danger: #dc2626;
+            --ok: #16a34a;
+            --warn: #d97706;
         }
         * { box-sizing: border-box; }
         body {
             margin: 0;
             font-family: Inter, "Segoe UI", Roboto, system-ui, sans-serif;
             color: var(--text);
-            background: radial-gradient(70% 70% at 15% 0%, #13213d 0%, transparent 55%),
-                        radial-gradient(50% 50% at 100% 0%, #1e1b4b 0%, transparent 55%),
-                        linear-gradient(180deg, var(--bg), var(--bg-2));
+            background: radial-gradient(70% 80% at 10% 0%, #192746 0%, transparent 60%),
+                        radial-gradient(70% 70% at 100% 0%, #312e81 0%, transparent 60%),
+                        linear-gradient(180deg, var(--bg), var(--bg2));
             min-height: 100vh;
         }
-        .wrap { max-width: 980px; margin: 0 auto; padding: 2rem 1rem; }
-        .glass {
-            border: 1px solid var(--border);
-            border-radius: 18px;
-            background: linear-gradient(180deg, rgba(11,18,32,0.96), rgba(11,18,32,0.85));
-            backdrop-filter: blur(4px);
-            box-shadow: 0 20px 50px rgba(2, 6, 23, 0.55);
-            overflow: hidden;
-        }
-        .header { padding: 1.4rem 1.6rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
-        .title { margin: 0; font-size: 1.45rem; letter-spacing: -0.02em; }
-        .subtitle { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.92rem; }
-        .status { font-size: 0.86rem; padding: 0.35rem 0.7rem; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); }
-        .status.ok { color: #86efac; }
-        .status.err { color: #fecaca; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; padding: 1rem; }
-        .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; }
-        .panel h3 { margin: 0 0 0.8rem; font-size: 0.85rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.08em; }
-        .btn-row { display: grid; gap: 0.7rem; }
-        button {
-            border: 0; border-radius: 12px; padding: 0.85rem 1rem; color: #fff; font-weight: 700; cursor: pointer;
-            transition: transform .15s ease, opacity .15s ease;
-        }
-        button:hover:enabled { transform: translateY(-1px); }
-        button:disabled { opacity: .75; cursor: not-allowed; }
-        .btn-primary { background: linear-gradient(130deg, var(--violet), #4f46e5); }
-        .btn-secondary { background: linear-gradient(130deg, #0369a1, var(--cyan)); }
-        .kpi { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
-        .kpi-card { background: #0b1220; border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem; }
-        .kpi-card .label { color: var(--muted); font-size: 0.8rem; }
-        .kpi-card .value { margin-top: 0.3rem; font-size: 1.1rem; font-weight: 700; }
-        .console { margin: 0 1rem 1rem; background: #040712; border: 1px solid #1f2937; border-radius: 12px; padding: .8rem .9rem; height: 320px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: .9rem; }
-        .foot { color: var(--muted); font-size: .78rem; text-align: right; margin: .5rem 1rem 1rem; }
-        @media (max-width: 850px) { .grid { grid-template-columns: 1fr; } .header { flex-direction: column; align-items: flex-start; } }
+        .wrap { max-width: 1160px; margin: 0 auto; padding: 24px 16px; }
+        .app { border: 1px solid var(--border); border-radius: 18px; background: rgba(15,23,42,.9); box-shadow: 0 20px 60px rgba(2,6,23,.5); overflow: hidden; }
+        .header { display: flex; justify-content: space-between; gap: 16px; align-items: start; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+        h1 { margin: 0; font-size: 1.45rem; }
+        .sub { margin: 6px 0 0; color: var(--muted); font-size: .92rem; }
+        .badge { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 8px 12px; font-size: .85rem; }
+        .badge.ok { color: #86efac; }
+        .badge.err { color: #fecaca; }
+        .grid { display: grid; gap: 14px; padding: 14px; grid-template-columns: 1.2fr 1fr; }
+        .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+        .panel h3 { margin: 0 0 10px; font-size: .87rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+        .btn-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+        button { border: 0; border-radius: 10px; padding: 11px 12px; color: white; cursor: pointer; font-weight: 700; }
+        button:disabled { opacity: .6; cursor: not-allowed; }
+        .btn-primary { background: linear-gradient(130deg, #7c3aed, var(--primary)); }
+        .btn-secondary { background: linear-gradient(130deg, #0e7490, #0891b2); }
+        .btn-neutral { background: linear-gradient(130deg, #1d4ed8, #2563eb); }
+        .btn-read { background: linear-gradient(130deg, #065f46, #059669); }
+        .btn-write { background: linear-gradient(130deg, #9a3412, #c2410c); }
+        .help { margin: 8px 0 0; font-size: .86rem; color: var(--muted); line-height: 1.45; }
+        .fields { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: center; }
+        input { width: 100%; border: 1px solid #475569; border-radius: 10px; padding: 10px 11px; background: #0b1220; color: #f8fafc; }
+        .quick { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+        .chip { padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px; background: #0b1220; color: var(--muted); cursor: pointer; font-size: .8rem; }
+        .chip:hover { color: var(--text); }
+        .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+        .stat { border: 1px solid var(--border); background: #0b1220; border-radius: 10px; padding: 9px; }
+        .stat .k { font-size: .75rem; color: var(--muted); }
+        .stat .v { font-size: 1.1rem; font-weight: 800; margin-top: 2px; }
+        .console { margin: 0 14px 14px; height: 300px; background: #030712; border: 1px solid #1f2937; border-radius: 12px; padding: 10px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .87rem; }
+        .line-ok{color:#86efac}.line-warn{color:#fcd34d}.line-err{color:#fca5a5}.line-note{color:#c4b5fd}
+        .footer { margin: 0 14px 14px; color: var(--muted); font-size: .78rem; }
+        @media(max-width: 960px){ .grid{grid-template-columns:1fr;} .btn-row{grid-template-columns:1fr;} .stats{grid-template-columns:1fr 1fr;} }
     </style>
 </head>
 <body>
 <div class="wrap">
-    <div class="glass">
+    <div class="app">
         <div class="header">
             <div>
-                <h1 class="title">Ink Ops Console</h1>
-                <p class="subtitle">Dark-mode NFC tooling with cloning + universal tag scan support</p>
+                <h1>Ink Ops Professional Console</h1>
+                <p class="sub">Guided PN532 workflow: clone, scan, diagnose, and MIFARE Classic read/write.</p>
             </div>
-            <span id="hwBadge" class="status {% if hw_status == 'Connected' %}ok{% else %}err{% endif %}">
+            <span id="hwBadge" class="badge {% if hw_status == 'Connected' %}ok{% else %}err{% endif %}">
                 {% if hw_status == "Connected" %}PN532 Online{% else %}{{ hw_status }}{% endif %}
             </span>
         </div>
 
         <div class="grid">
-            <div class="panel">
-                <h3>Operations</h3>
+            <section class="panel">
+                <h3>1) Core Operations</h3>
                 <div class="btn-row">
                     <button id="burnBtn" class="btn-primary">🔥 Ink Clone Burn</button>
-                    <button id="scanBtn" class="btn-secondary">📡 Scan Tag/Card UID</button>
+                    <button id="scanBtn" class="btn-secondary">📡 Scan UID</button>
+                    <button id="fwBtn" class="btn-neutral">🧪 Get Firmware</button>
                 </div>
-            </div>
-            <div class="panel">
+                <p class="help">Use <strong>Ink Clone Burn</strong> for your primary production workflow. Use Scan/Firmware for validation and troubleshooting.</p>
+            </section>
+
+            <section class="panel">
                 <h3>Session Metrics</h3>
-                <div class="kpi">
-                    <div class="kpi-card"><div class="label">Operations</div><div id="opCount" class="value">0</div></div>
-                    <div class="kpi-card"><div class="label">Success Rate</div><div id="successRate" class="value">0%</div></div>
+                <div class="stats">
+                    <div class="stat"><div class="k">Operations</div><div id="ops" class="v">0</div></div>
+                    <div class="stat"><div class="k">Success Rate</div><div id="rate" class="v">0%</div></div>
+                    <div class="stat"><div class="k">Last Status</div><div id="last" class="v">Idle</div></div>
                 </div>
-            </div>
+            </section>
+
+            <section class="panel">
+                <h3>2) MIFARE Classic Tooling</h3>
+                <div class="fields">
+                    <label for="block">Block #</label>
+                    <input id="block" type="number" min="0" max="63" value="4" />
+                    <label for="hex">16-byte Hex</label>
+                    <input id="hex" value="000102030405060708090A0B0C0D0E0F" />
+                </div>
+                <div class="quick">
+                    <button id="readBtn" class="btn-read">📥 Read Block</button>
+                    <button id="writeBtn" class="btn-write">✍️ Write Block</button>
+                    <span class="chip" data-fill="00000000000000000000000000000000">Fill Zeroes</span>
+                    <span class="chip" data-fill="FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF">Fill FF</span>
+                    <span class="chip" data-fill="11223344556677889900AABBCCDDEEFF">Fill Pattern</span>
+                </div>
+                <p class="help">⚠️ Avoid sector trailer blocks (3, 7, 11, ...), unless you intentionally manage keys/access bits.</p>
+            </section>
+
+            <section class="panel">
+                <h3>Operator Guidance</h3>
+                <ul class="help" style="margin:0; padding-left:18px;">
+                    <li>Only one reader task runs at a time to prevent collisions.</li>
+                    <li>Present card/tag flat against antenna and hold steady until completion.</li>
+                    <li>Read/write uses Key A from environment (default <code>FFFFFFFFFFFF</code>).</li>
+                    <li>All actions are streamed below in live console logs.</li>
+                </ul>
+            </section>
         </div>
 
-        <div id="console" class="console"><div>[Idle] Ready for operator command.</div></div>
-        <div class="foot">Live events over Socket.IO</div>
+        <div id="console" class="console"><div class="line-note">[Idle] Ready for operator command.</div></div>
+        <div class="footer">Live events over Socket.IO • UI designed for production operators</div>
     </div>
 </div>
 
 <script>
-    const socket = io();
-    const burnBtn = document.getElementById('burnBtn');
-    const scanBtn = document.getElementById('scanBtn');
-    const consoleBox = document.getElementById('console');
-    const hwBadge = document.getElementById('hwBadge');
-    const opCountEl = document.getElementById('opCount');
-    const successRateEl = document.getElementById('successRate');
+const socket = io();
+const $ = (id) => document.getElementById(id);
+const controls = ['burnBtn','scanBtn','fwBtn','readBtn','writeBtn'].map($);
+const chips = Array.from(document.querySelectorAll('.chip'));
+let totalOps = 0, successOps = 0;
 
-    let totalOps = 0;
-    let successOps = 0;
+function setBusy(busy){ controls.forEach(btn => btn.disabled = busy); }
+function setBadge(status){
+  const badge = $('hwBadge');
+  const ok = status === 'Connected' || status === 'PN532 Online';
+  badge.className = `badge ${ok ? 'ok' : 'err'}`;
+  badge.textContent = ok ? 'PN532 Online' : status;
+}
+function addLog(text){
+  const line = document.createElement('div');
+  const t = String(text || '');
+  line.textContent = t;
+  line.className = t.includes('✅') ? 'line-ok' : t.includes('⚠️') ? 'line-warn' : t.includes('❌') ? 'line-err' : 'line-note';
+  $('console').appendChild(line);
+  $('console').scrollTop = $('console').scrollHeight;
+}
+function normalizeHex(raw){ return raw.replace(/[^0-9a-fA-F]/g, '').toUpperCase(); }
+function refreshMetrics(status){
+  if (status !== 'busy') totalOps += 1;
+  if (status === 'success') successOps += 1;
+  $('ops').textContent = String(totalOps);
+  $('rate').textContent = `${totalOps ? Math.round((successOps / totalOps) * 100) : 0}%`;
+  $('last').textContent = status === 'success' ? 'Success' : status === 'fail' ? 'Fail' : status === 'busy' ? 'Busy' : 'Idle';
+}
 
-    function setBusy(isBusy, label = 'Working...') {
-        burnBtn.disabled = isBusy;
-        scanBtn.disabled = isBusy;
-        if (isBusy) {
-            burnBtn.textContent = label.includes('Burn') ? label : '⚡ Burn in progress...';
-            scanBtn.textContent = label.includes('Scan') ? label : '🔄 Scanner in progress...';
-        } else {
-            burnBtn.textContent = '🔥 Ink Clone Burn';
-            scanBtn.textContent = '📡 Scan Tag/Card UID';
-        }
-    }
+chips.forEach(chip => chip.addEventListener('click', () => $('hex').value = chip.dataset.fill));
 
-    function appendLog(text) {
-        const line = document.createElement('div');
-        line.textContent = text;
-        consoleBox.appendChild(line);
-        consoleBox.scrollTop = consoleBox.scrollHeight;
-    }
+$('burnBtn').addEventListener('click', () => { setBusy(true); addLog('🚀 Starting ink clone burn workflow...'); socket.emit('start_burn'); });
+$('scanBtn').addEventListener('click', () => { setBusy(true); addLog('📡 Starting UID scan...'); socket.emit('scan_tag'); });
+$('fwBtn').addEventListener('click', () => { setBusy(true); addLog('🧪 Querying PN532 firmware...'); socket.emit('get_firmware'); });
+$('readBtn').addEventListener('click', () => {
+  const block = parseInt($('block').value || '4', 10);
+  setBusy(true); addLog(`📥 Reading MIFARE block ${block}...`);
+  socket.emit('read_classic_block', { block });
+});
+$('writeBtn').addEventListener('click', () => {
+  const block = parseInt($('block').value || '4', 10);
+  const data_hex = normalizeHex($('hex').value || '');
+  $('hex').value = data_hex;
+  if (data_hex.length !== 32) { addLog('❌ Write cancelled: payload must be exactly 16 bytes (32 hex chars).'); return; }
+  setBusy(true); addLog(`✍️ Writing MIFARE block ${block}...`);
+  socket.emit('write_classic_block', { block, data_hex });
+});
 
-    function refreshMetrics(wasSuccess) {
-        totalOps += 1;
-        if (wasSuccess) successOps += 1;
-        opCountEl.textContent = String(totalOps);
-        const pct = totalOps ? Math.round((successOps / totalOps) * 100) : 0;
-        successRateEl.textContent = `${pct}%`;
-    }
-
-    burnBtn.addEventListener('click', () => {
-        setBusy(true, '⚡ Burn in progress...');
-        appendLog('🚀 Operator requested ink clone burn.');
-        socket.emit('start_burn');
-    });
-
-    scanBtn.addEventListener('click', () => {
-        setBusy(true, '🔄 Scan in progress...');
-        appendLog('📡 Operator requested universal tag/card UID scan.');
-        socket.emit('scan_tag');
-    });
-
-    socket.on('log_update', (msg) => appendLog(msg.data));
-
-    socket.on('hw_status_update', (msg) => {
-        const connected = msg.status === 'Connected';
-        hwBadge.className = `status ${connected ? 'ok' : 'err'}`;
-        hwBadge.textContent = connected ? 'PN532 Online' : msg.status;
-    });
-
-    socket.on('action_complete', (msg) => {
-        const wasSuccess = msg.status === 'success';
-        if (msg.status !== 'busy') {
-            refreshMetrics(wasSuccess);
-        }
-        if (msg.status === 'busy') {
-            appendLog('⚠️ Busy: another operation is running.');
-        }
-        setBusy(false);
-    });
-
-    socket.emit('refresh_hw_status');
+socket.on('log_update', msg => addLog(msg.data));
+socket.on('hw_status_update', msg => setBadge(msg.status));
+socket.on('action_complete', msg => { setBusy(false); refreshMetrics(msg.status); });
+socket.emit('refresh_hw_status');
 </script>
 </body>
 </html>
