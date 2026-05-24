@@ -52,6 +52,16 @@ def ensure_reader() -> bool:
         log_to_web('❌ PN532 unavailable.'); socketio.emit('action_complete', {'status': 'fail'}); return False
     return True
 
+def ensure_reader() -> bool:
+    if not pn532:
+        log_to_web('❌ PN532 unavailable. Check wiring and service startup logs.')
+        socketio.emit('action_complete', {'status': 'fail'})
+        return False
+    return True
+
+
+def uid_to_str(uid: bytes) -> str:
+    return '-'.join(f'{x:02X}' for x in uid)
 
 def poll_for_tag() -> Optional[bytes]:
     timeout = time.time() + TAG_DETECTION_TIMEOUT_SECONDS
