@@ -1,25 +1,22 @@
 # Photobooth Ink Cloner
 
-Professional Flask + Socket.IO operations console for PN532-based NFC workflows.
+Professional Flask + Socket.IO PN532 console with **ink cloning as the primary workflow** and advanced NFC operations in secondary tabs.
 
-## What’s included
+## Core focus
+- Verbose **Ink Clone Burn** workflow (step-by-step logs, progress, summary).
 
-- **Ink cloning workflow preserved** (existing burn sequence remains core capability).
-- **PN532 hardware diagnostics** (firmware/version query).
-- **Universal UID scan** for quick tag detection.
-- **MIFARE Classic block operations**:
-  - Authenticate block with Key A
-  - Read 16-byte block
-  - Write 16-byte block
-- **Safer concurrency model**: one NFC operation at a time with explicit busy responses.
-- **Live operator logs** in browser.
-
-## Safety & legal
-
-Use only on tags/systems you own or are authorized to manage. Writing NFC memory or changing identifiers can violate law, contracts, or warranties.
+## Additional PN532 features
+- UID Scan
+- Tag Profiling (family hint)
+- Firmware check
+- Reader reconnect
+- MIFARE Classic read/write/dump
+- Safe mode write protections + optional expert trailer writes
+- In-memory backup/restore workflow (dump + restore)
+- Operation history/audit export (JSON)
+- NTAG (Type 2) page read/write (with verify)
 
 ## Quick start
-
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -27,13 +24,9 @@ pip install --upgrade pip
 pip install flask flask-socketio adafruit-blinka adafruit-circuitpython-pn532
 python app.py
 ```
-
 Open: `http://localhost:5000`
 
-## Config
-
-Environment variables:
-
+## Configuration
 - `SECRET_KEY`
 - `CORS_ALLOWED_ORIGINS`
 - `PORT` (default `5000`)
@@ -41,25 +34,7 @@ Environment variables:
 - `TAG_DETECTION_POLL_SECONDS` (default `0.2`)
 - `WRITE_BLOCK_RESPONSE_LENGTH` (default `10`)
 - `MIFARE_DEFAULT_KEY_A_HEX` (default `FFFFFFFFFFFF`)
+- `SAFE_MODE` (default `true`)
 
-## New Operations
-
-- **Get Firmware**: fetch PN532 firmware info to verify reader state.
-- **Read Block**: enter Classic block index and read data.
-- **Write Block**: write 16-byte hex payload to Classic block.
-
-> Tip: avoid trailer blocks (`3, 7, 11, ...`) unless intentionally changing keys/access bits.
-
-## Next polish opportunities
-
-- Add sector-dump and full-card backup/restore workflows.
-- Add configurable keys per sector.
-- Add NTAG page read/write support if your tag mix includes Type 2 tags.
-- Add role-based auth and full audit history for production operators.
-
-
-## Additional Operations Added
-
-- Reconnect PN532 reader from UI (`Reconnect Reader`)
-- MIFARE Classic block dump range (UI shortcut dumps blocks 0-15)
-- Write with verify-after-write (enabled by default in backend)
+## Safety
+Use only on tags/systems you own or are authorized to manage.
