@@ -56,3 +56,10 @@ Environment variables:
 - Add configurable keys per sector.
 - Add NTAG page read/write support if your tag mix includes Type 2 tags.
 - Add role-based auth and full audit history for production operators.
+
+
+## Additional Operations Added
+
+- Reconnect PN532 reader from UI (`Reconnect Reader`)
+- MIFARE Classic block dump range (UI shortcut dumps blocks 0-15)
+- Write with verify-after-write (enabled by default in backend)

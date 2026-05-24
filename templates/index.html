@@ -84,6 +84,7 @@
                     <button id="burnBtn" class="btn-primary">🔥 Ink Clone Burn</button>
                     <button id="scanBtn" class="btn-secondary">📡 Scan UID</button>
                     <button id="fwBtn" class="btn-neutral">🧪 Get Firmware</button>
+                    <button id="reconnectBtn" class="btn-neutral">🔁 Reconnect Reader</button>
                 </div>
                 <p class="help">Use <strong>Ink Clone Burn</strong> for your primary production workflow. Use Scan/Firmware for validation and troubleshooting.</p>
             </section>
@@ -108,6 +109,7 @@
                 <div class="quick">
                     <button id="readBtn" class="btn-read">📥 Read Block</button>
                     <button id="writeBtn" class="btn-write">✍️ Write Block</button>
+                    <button id="dumpBtn" class="btn-secondary">📚 Dump Blocks 0-15</button>
                     <span class="chip" data-fill="00000000000000000000000000000000">Fill Zeroes</span>
                     <span class="chip" data-fill="FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF">Fill FF</span>
                     <span class="chip" data-fill="11223344556677889900AABBCCDDEEFF">Fill Pattern</span>
@@ -134,7 +136,7 @@
 <script>
 const socket = io();
 const $ = (id) => document.getElementById(id);
-const controls = ['burnBtn','scanBtn','fwBtn','readBtn','writeBtn'].map($);
+const controls = ['burnBtn','scanBtn','fwBtn','reconnectBtn','readBtn','writeBtn','dumpBtn'].map($);
 const chips = Array.from(document.querySelectorAll('.chip'));
 let totalOps = 0, successOps = 0;
 
@@ -167,11 +169,13 @@ chips.forEach(chip => chip.addEventListener('click', () => $('hex').value = chip
 $('burnBtn').addEventListener('click', () => { setBusy(true); addLog('🚀 Starting ink clone burn workflow...'); socket.emit('start_burn'); });
 $('scanBtn').addEventListener('click', () => { setBusy(true); addLog('📡 Starting UID scan...'); socket.emit('scan_tag'); });
 $('fwBtn').addEventListener('click', () => { setBusy(true); addLog('🧪 Querying PN532 firmware...'); socket.emit('get_firmware'); });
+$('reconnectBtn').addEventListener('click', () => { setBusy(true); addLog('🔁 Reconnecting PN532 reader...'); socket.emit('reconnect_reader'); });
 $('readBtn').addEventListener('click', () => {
   const block = parseInt($('block').value || '4', 10);
   setBusy(true); addLog(`📥 Reading MIFARE block ${block}...`);
   socket.emit('read_classic_block', { block });
 });
+$('dumpBtn').addEventListener('click', () => { setBusy(true); addLog('📚 Running block dump (0-15)...'); socket.emit('dump_classic', {start_block:0,end_block:15}); });
 $('writeBtn').addEventListener('click', () => {
   const block = parseInt($('block').value || '4', 10);
   const data_hex = normalizeHex($('hex').value || '');
