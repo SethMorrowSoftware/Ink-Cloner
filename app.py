@@ -65,6 +65,8 @@ def ensure_reader() -> bool:
         log_to_web('❌ PN532 unavailable.'); socketio.emit('action_complete', {'status': 'fail'}); return False
     return True
 
+def uid_to_str(uid: bytes) -> str:
+    return '-'.join(f'{x:02X}' for x in uid)
 
 def poll_for_tag() -> Optional[bytes]:
     timeout = time.time() + TAG_DETECTION_TIMEOUT_SECONDS
@@ -219,6 +221,9 @@ def run_profile_tag():
     log_to_web(f'ℹ️ UID: {uid_str(uid)} | length={len(uid)} bytes | hint={probable}')
     socketio.emit('action_complete', {'status': 'success'})
 
+    log_to_web('🏁 [STEP 5/5] Finalizing operation and notifying UI...')
+    log_to_web('✅ SUCCESS: Ink clone burn completed.')
+    socketio.emit('action_complete', {'status': 'success'})
 
 def run_reconnect():
     initialize_hardware(); update_ui_status()
