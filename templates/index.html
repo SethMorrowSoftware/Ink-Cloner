@@ -3,175 +3,42 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Photobooth Ink Ops Console</title>
+    <title>Ink Ops Console</title>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-    <style>
-        :root {
-            --bg: #070b14;
-            --bg-2: #0f172a;
-            --card: #0b1220;
-            --surface: #111a2d;
-            --text: #e2e8f0;
-            --muted: #94a3b8;
-            --cyan: #22d3ee;
-            --violet: #8b5cf6;
-            --green: #22c55e;
-            --yellow: #f59e0b;
-            --red: #ef4444;
-            --border: rgba(148, 163, 184, 0.2);
-        }
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            font-family: Inter, "Segoe UI", Roboto, system-ui, sans-serif;
-            color: var(--text);
-            background: radial-gradient(70% 70% at 15% 0%, #13213d 0%, transparent 55%),
-                        radial-gradient(50% 50% at 100% 0%, #1e1b4b 0%, transparent 55%),
-                        linear-gradient(180deg, var(--bg), var(--bg-2));
-            min-height: 100vh;
-        }
-        .wrap { max-width: 980px; margin: 0 auto; padding: 2rem 1rem; }
-        .glass {
-            border: 1px solid var(--border);
-            border-radius: 18px;
-            background: linear-gradient(180deg, rgba(11,18,32,0.96), rgba(11,18,32,0.85));
-            backdrop-filter: blur(4px);
-            box-shadow: 0 20px 50px rgba(2, 6, 23, 0.55);
-            overflow: hidden;
-        }
-        .header { padding: 1.4rem 1.6rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
-        .title { margin: 0; font-size: 1.45rem; letter-spacing: -0.02em; }
-        .subtitle { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.92rem; }
-        .status { font-size: 0.86rem; padding: 0.35rem 0.7rem; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); }
-        .status.ok { color: #86efac; }
-        .status.err { color: #fecaca; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; padding: 1rem; }
-        .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; }
-        .panel h3 { margin: 0 0 0.8rem; font-size: 0.85rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.08em; }
-        .btn-row { display: grid; gap: 0.7rem; }
-        button {
-            border: 0; border-radius: 12px; padding: 0.85rem 1rem; color: #fff; font-weight: 700; cursor: pointer;
-            transition: transform .15s ease, opacity .15s ease;
-        }
-        button:hover:enabled { transform: translateY(-1px); }
-        button:disabled { opacity: .75; cursor: not-allowed; }
-        .btn-primary { background: linear-gradient(130deg, var(--violet), #4f46e5); }
-        .btn-secondary { background: linear-gradient(130deg, #0369a1, var(--cyan)); }
-        .kpi { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
-        .kpi-card { background: #0b1220; border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem; }
-        .kpi-card .label { color: var(--muted); font-size: 0.8rem; }
-        .kpi-card .value { margin-top: 0.3rem; font-size: 1.1rem; font-weight: 700; }
-        .console { margin: 0 1rem 1rem; background: #040712; border: 1px solid #1f2937; border-radius: 12px; padding: .8rem .9rem; height: 320px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: .9rem; }
-        .foot { color: var(--muted); font-size: .78rem; text-align: right; margin: .5rem 1rem 1rem; }
-        @media (max-width: 850px) { .grid { grid-template-columns: 1fr; } .header { flex-direction: column; align-items: flex-start; } }
-    </style>
+    <style>body{font-family:system-ui;background:#0b1020;color:#e2e8f0;margin:0}.wrap{max-width:1000px;margin:0 auto;padding:20px}.card{background:#111827;border:1px solid #334155;border-radius:12px;padding:16px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.console{height:320px;overflow:auto;background:#020617;padding:10px;border-radius:8px;border:1px solid #334155;margin-top:12px;font-family:monospace}button,input{padding:10px;border-radius:8px;border:1px solid #475569;background:#1e293b;color:#f8fafc}button{cursor:pointer;background:#2563eb}button:disabled{opacity:.6} .status{float:right}@media(max-width:900px){.grid{grid-template-columns:1fr}}</style>
 </head>
-<body>
-<div class="wrap">
-    <div class="glass">
-        <div class="header">
-            <div>
-                <h1 class="title">Ink Ops Console</h1>
-                <p class="subtitle">Dark-mode NFC tooling with cloning + universal tag scan support</p>
-            </div>
-            <span id="hwBadge" class="status {% if hw_status == 'Connected' %}ok{% else %}err{% endif %}">
-                {% if hw_status == "Connected" %}PN532 Online{% else %}{{ hw_status }}{% endif %}
-            </span>
+<body><div class="wrap"><div class="card">
+    <h2>Ink Ops Console <span id="hwBadge" class="status">{{ hw_status }}</span></h2>
+    <div class="grid">
+        <div>
+            <h3>Core</h3>
+            <p><button id="burnBtn">Ink Clone Burn</button> <button id="scanBtn">Scan UID</button> <button id="fwBtn">Get Firmware</button></p>
+            <h3>MIFARE Classic</h3>
+            <p>Block <input id="block" value="4" size="5"> Data Hex (16 bytes) <input id="hex" value="000102030405060708090A0B0C0D0E0F" size="40"></p>
+            <p><button id="readBtn">Read Block</button> <button id="writeBtn">Write Block</button></p>
         </div>
-
-        <div class="grid">
-            <div class="panel">
-                <h3>Operations</h3>
-                <div class="btn-row">
-                    <button id="burnBtn" class="btn-primary">🔥 Ink Clone Burn</button>
-                    <button id="scanBtn" class="btn-secondary">📡 Scan Tag/Card UID</button>
-                </div>
-            </div>
-            <div class="panel">
-                <h3>Session Metrics</h3>
-                <div class="kpi">
-                    <div class="kpi-card"><div class="label">Operations</div><div id="opCount" class="value">0</div></div>
-                    <div class="kpi-card"><div class="label">Success Rate</div><div id="successRate" class="value">0%</div></div>
-                </div>
-            </div>
+        <div>
+            <h3>Operator Notes</h3>
+            <ul>
+                <li>Read/write uses Key A (default FF FF FF FF FF FF).</li>
+                <li>Do not write sector trailer blocks unless intentionally changing keys/access bits.</li>
+                <li>Ink clone workflow remains unchanged and prioritized.</li>
+            </ul>
         </div>
-
-        <div id="console" class="console"><div>[Idle] Ready for operator command.</div></div>
-        <div class="foot">Live events over Socket.IO</div>
     </div>
-</div>
-
+    <div id="console" class="console"><div>[Idle] Ready.</div></div>
+</div></div>
 <script>
-    const socket = io();
-    const burnBtn = document.getElementById('burnBtn');
-    const scanBtn = document.getElementById('scanBtn');
-    const consoleBox = document.getElementById('console');
-    const hwBadge = document.getElementById('hwBadge');
-    const opCountEl = document.getElementById('opCount');
-    const successRateEl = document.getElementById('successRate');
-
-    let totalOps = 0;
-    let successOps = 0;
-
-    function setBusy(isBusy, label = 'Working...') {
-        burnBtn.disabled = isBusy;
-        scanBtn.disabled = isBusy;
-        if (isBusy) {
-            burnBtn.textContent = label.includes('Burn') ? label : '⚡ Burn in progress...';
-            scanBtn.textContent = label.includes('Scan') ? label : '🔄 Scanner in progress...';
-        } else {
-            burnBtn.textContent = '🔥 Ink Clone Burn';
-            scanBtn.textContent = '📡 Scan Tag/Card UID';
-        }
-    }
-
-    function appendLog(text) {
-        const line = document.createElement('div');
-        line.textContent = text;
-        consoleBox.appendChild(line);
-        consoleBox.scrollTop = consoleBox.scrollHeight;
-    }
-
-    function refreshMetrics(wasSuccess) {
-        totalOps += 1;
-        if (wasSuccess) successOps += 1;
-        opCountEl.textContent = String(totalOps);
-        const pct = totalOps ? Math.round((successOps / totalOps) * 100) : 0;
-        successRateEl.textContent = `${pct}%`;
-    }
-
-    burnBtn.addEventListener('click', () => {
-        setBusy(true, '⚡ Burn in progress...');
-        appendLog('🚀 Operator requested ink clone burn.');
-        socket.emit('start_burn');
-    });
-
-    scanBtn.addEventListener('click', () => {
-        setBusy(true, '🔄 Scan in progress...');
-        appendLog('📡 Operator requested universal tag/card UID scan.');
-        socket.emit('scan_tag');
-    });
-
-    socket.on('log_update', (msg) => appendLog(msg.data));
-
-    socket.on('hw_status_update', (msg) => {
-        const connected = msg.status === 'Connected';
-        hwBadge.className = `status ${connected ? 'ok' : 'err'}`;
-        hwBadge.textContent = connected ? 'PN532 Online' : msg.status;
-    });
-
-    socket.on('action_complete', (msg) => {
-        const wasSuccess = msg.status === 'success';
-        if (msg.status !== 'busy') {
-            refreshMetrics(wasSuccess);
-        }
-        if (msg.status === 'busy') {
-            appendLog('⚠️ Busy: another operation is running.');
-        }
-        setBusy(false);
-    });
-
-    socket.emit('refresh_hw_status');
-</script>
-</body>
-</html>
+const s=io(); const q=id=>document.getElementById(id); const log=t=>{const d=document.createElement('div');d.textContent=t;q('console').appendChild(d);q('console').scrollTop=q('console').scrollHeight};
+const btns=['burnBtn','scanBtn','fwBtn','readBtn','writeBtn'].map(q);
+function busy(v){btns.forEach(b=>b.disabled=v)}
+q('burnBtn').onclick=()=>{busy(true);s.emit('start_burn')};
+q('scanBtn').onclick=()=>{busy(true);s.emit('scan_tag')};
+q('fwBtn').onclick=()=>{busy(true);s.emit('get_firmware')};
+q('readBtn').onclick=()=>{busy(true);s.emit('read_classic_block',{block:parseInt(q('block').value||'4',10)})};
+q('writeBtn').onclick=()=>{busy(true);s.emit('write_classic_block',{block:parseInt(q('block').value||'4',10),data_hex:q('hex').value.trim()})};
+s.on('log_update',m=>log(m.data));
+s.on('hw_status_update',m=>q('hwBadge').textContent=m.status);
+s.on('action_complete',()=>busy(false));
+s.emit('refresh_hw_status');
+</script></body></html>
