@@ -137,46 +137,62 @@ def run_reconnect():
 def run_burn_sequence():
     if not ensure_reader():
         return
+
     log_to_web('🚀 Ink Clone Protocol started.')
-    log_to_web('⏳ [STEP 1/4] Waiting for ink tag placement on antenna...')
+    log_to_web('ℹ️ Preparing PN532 session and validating reader state...')
+    log_to_web('⏳ [STEP 1/5] Waiting for ink tag placement on antenna...')
+
     uid = poll_for_tag()
     if not uid:
-        log_to_web('❌ Timeout: No tag detected.')
+        log_to_web('❌ Timeout: No tag detected within configured detection window.')
         socketio.emit('action_complete', {'status': 'fail'})
         return
+
     log_to_web(f'🎯 Tag detected: UID {uid_str(uid)}')
-    log_to_web('✍️ [STEP 2/4] Writing clone block payloads...')
+    log_to_web(f'ℹ️ Tag UID length: {len(uid)} bytes')
+    log_to_web('✍️ [STEP 2/5] Starting clone data write pass (64 blocks)...')
+
     failed = []
+    wrote = 0
+    milestones = {1, 2, 3, 4, 8, 16, 24, 32, 40, 48, 56, 64}
+
     for i, block_bytes in enumerate(CLEARED_DATA_BLOCKS):
         try:
-            pn532.call_function(0x42, params=bytes([0x42, 0x21, i]) + block_bytes, response_length=WRITE_BLOCK_RESPONSE_LENGTH)
-            if i in (0, 1, 2, 3, 15, 31, 47, 63):
-                log_to_web(f'   • Progress: block {i + 1}/64 written')
+            pn532.call_function(
+                0x42,
+                params=bytes([0x42, 0x21, i]) + block_bytes,
+                response_length=WRITE_BLOCK_RESPONSE_LENGTH,
+            )
+            wrote += 1
+            current = i + 1
+            if current in milestones:
+                log_to_web(f'   • Write progress: {current}/64 blocks complete')
         except Exception as exc:
             failed.append(i)
-            log_to_web(f'⚠️ Block {i} skipped: {exc}')
-    log_to_web('🔐 [STEP 3/4] Applying Gen2 UID handshake...')
-    pn532.call_function(0x42, params=bytes([0x42, 0xB4, 0x00]) + TARGET_UID, response_length=WRITE_BLOCK_RESPONSE_LENGTH)
-    log_to_web('🧪 [STEP 4/4] Finalizing and reporting status...')
+            log_to_web(f'⚠️ Block {i} skipped due to write error: {exc}')
+
+    log_to_web('🔐 [STEP 3/5] Applying Gen2 UID handshake payload...')
+    pn532.call_function(
+        0x42,
+        params=bytes([0x42, 0xB4, 0x00]) + TARGET_UID,
+        response_length=WRITE_BLOCK_RESPONSE_LENGTH,
+    )
+
+    log_to_web('🧪 [STEP 4/5] Performing post-write summary checks...')
+    log_to_web(f'ℹ️ Blocks attempted: 64 | blocks written: {wrote} | blocks skipped: {len(failed)}')
+
     if failed:
         failed_str = ', '.join(str(i) for i in failed)
         log_to_web(f'⚠️ Clone finished with warnings. Skipped blocks: {failed_str}')
     else:
-        log_to_web('✅ Clone blocks written with no skips.')
+        log_to_web('✅ Clone blocks written with no skipped blocks.')
+
+    log_to_web('🏁 [STEP 5/5] Finalizing operation and notifying UI...')
     log_to_web('✅ SUCCESS: Ink clone burn completed.')
     socketio.emit('action_complete', {'status': 'success'})
 
-def run_burn_sequence():
-    if not ensure_reader(): return
-    uid = poll_for_tag()
-    if not uid: log_to_web('❌ No tag detected.'); socketio.emit('action_complete', {'status': 'fail'}); return
-    for i, block_bytes in enumerate(CLEARED_DATA_BLOCKS):
-        try:
-            pn532.call_function(0x42, params=bytes([0x42, 0x21, i]) + block_bytes, response_length=WRITE_BLOCK_RESPONSE_LENGTH)
-        except Exception as exc:
-            log_to_web(f'⚠️ Skip block {i}: {exc}')
-    pn532.call_function(0x42, params=bytes([0x42, 0xB4, 0x00]) + TARGET_UID, response_length=WRITE_BLOCK_RESPONSE_LENGTH)
-    log_to_web('✅ Ink clone burn completed.'); socketio.emit('action_complete', {'status': 'success'})
+@app.route('/favicon.ico')
+def favicon(): return Response(status=204)
 
 def with_lock(fn, *a):
     if not op_lock.acquire(blocking=False): log_to_web('⚠️ Busy.'); socketio.emit('action_complete', {'status': 'busy'}); return
@@ -184,11 +200,6 @@ def with_lock(fn, *a):
     except Exception as exc: log_to_web(f'❌ {exc}'); socketio.emit('action_complete', {'status': 'fail'})
     finally: op_lock.release()
 
-def with_lock(fn, *a):
-    if not op_lock.acquire(blocking=False): log_to_web('⚠️ Busy.'); socketio.emit('action_complete', {'status': 'busy'}); return
-    try: fn(*a)
-    except Exception as exc: log_to_web(f'❌ {exc}'); socketio.emit('action_complete', {'status': 'fail'})
-    finally: op_lock.release()
 
 @app.route('/')
 def index(): return render_template('index.html', hw_status=hardware_status)
