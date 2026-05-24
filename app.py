@@ -52,6 +52,8 @@ def ensure_reader() -> bool:
         log_to_web('❌ PN532 unavailable.'); socketio.emit('action_complete', {'status': 'fail'}); return False
     return True
 
+def uid_to_str(uid: bytes) -> str:
+    return '-'.join(f'{x:02X}' for x in uid)
 
 def poll_for_tag() -> Optional[bytes]:
     timeout = time.time() + TAG_DETECTION_TIMEOUT_SECONDS
@@ -189,6 +191,8 @@ def run_burn_sequence():
     log_to_web('✅ SUCCESS: Ink clone burn completed.')
     socketio.emit('action_complete', {'status': 'success'})
 
+@app.route('/favicon.ico')
+def favicon(): return Response(status=204)
 
 def with_lock(fn, *a):
     if not op_lock.acquire(blocking=False): log_to_web('⚠️ Busy.'); socketio.emit('action_complete', {'status': 'busy'}); return
