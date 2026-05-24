@@ -52,6 +52,8 @@ def ensure_reader() -> bool:
         log_to_web('❌ PN532 unavailable.'); socketio.emit('action_complete', {'status': 'fail'}); return False
     return True
 
+def uid_to_str(uid: bytes) -> str:
+    return '-'.join(f'{x:02X}' for x in uid)
 
 def poll_for_tag() -> Optional[bytes]:
     timeout = time.time() + TAG_DETECTION_TIMEOUT_SECONDS
@@ -164,6 +166,17 @@ def run_burn_sequence():
     log_to_web('✅ SUCCESS: Ink clone burn completed.')
     socketio.emit('action_complete', {'status': 'success'})
 
+def run_burn_sequence():
+    if not ensure_reader(): return
+    uid = poll_for_tag()
+    if not uid: log_to_web('❌ No tag detected.'); socketio.emit('action_complete', {'status': 'fail'}); return
+    for i, block_bytes in enumerate(CLEARED_DATA_BLOCKS):
+        try:
+            pn532.call_function(0x42, params=bytes([0x42, 0x21, i]) + block_bytes, response_length=WRITE_BLOCK_RESPONSE_LENGTH)
+        except Exception as exc:
+            log_to_web(f'⚠️ Skip block {i}: {exc}')
+    pn532.call_function(0x42, params=bytes([0x42, 0xB4, 0x00]) + TARGET_UID, response_length=WRITE_BLOCK_RESPONSE_LENGTH)
+    log_to_web('✅ Ink clone burn completed.'); socketio.emit('action_complete', {'status': 'success'})
 
 def with_lock(fn, *a):
     if not op_lock.acquire(blocking=False): log_to_web('⚠️ Busy.'); socketio.emit('action_complete', {'status': 'busy'}); return
@@ -171,6 +184,11 @@ def with_lock(fn, *a):
     except Exception as exc: log_to_web(f'❌ {exc}'); socketio.emit('action_complete', {'status': 'fail'})
     finally: op_lock.release()
 
+def with_lock(fn, *a):
+    if not op_lock.acquire(blocking=False): log_to_web('⚠️ Busy.'); socketio.emit('action_complete', {'status': 'busy'}); return
+    try: fn(*a)
+    except Exception as exc: log_to_web(f'❌ {exc}'); socketio.emit('action_complete', {'status': 'fail'})
+    finally: op_lock.release()
 
 @app.route('/')
 def index(): return render_template('index.html', hw_status=hardware_status)
