@@ -39,7 +39,7 @@ chown -R "$RUN_USER:$RUN_GROUP" "$INSTALL_DIR"
 
 sudo -u "$RUN_USER" python3 -m venv "$INSTALL_DIR/.venv"
 sudo -u "$RUN_USER" "$INSTALL_DIR/.venv/bin/python" -m pip install --upgrade pip
-sudo -u "$RUN_USER" "$INSTALL_DIR/.venv/bin/pip" install flask flask-socketio adafruit-blinka adafruit-circuitpython-pn532
+sudo -u "$RUN_USER" "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
 echo "==> Writing environment file"
 cat > /etc/default/ink-cloner <<EOF
@@ -49,6 +49,7 @@ PORT=$PORT
 TAG_DETECTION_TIMEOUT_SECONDS=10
 TAG_DETECTION_POLL_SECONDS=0.2
 WRITE_BLOCK_RESPONSE_LENGTH=10
+ENABLE_UID_BACKDOOR=false
 EOF
 chmod 640 /etc/default/ink-cloner
 
@@ -94,7 +95,7 @@ if command -v curl >/dev/null 2>&1; then
       echo "Service became inactive during health check"
       break
     fi
-    if curl -fsS "http://127.0.0.1:${PORT}/" >/dev/null; then
+    if curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null; then
       echo "Health check passed"
       ok=1
       break
