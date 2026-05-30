@@ -6,23 +6,28 @@
     <title>Ink Ops Pro</title>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <style>
-        body{margin:0;font-family:Inter,system-ui;background:#0b1220;color:#e2e8f0}
-        .wrap{max-width:800px;margin:0 auto;padding:18px}
-        .card{background:#0f172a;border:1px solid #334155;border-radius:16px;overflow:hidden}
-        .head{display:flex;justify-content:space-between;padding:16px;border-bottom:1px solid #334155}
-        .main{padding:12px;display:grid;grid-template-columns:1fr;gap:12px}
-        .panel{border:1px solid #334155;background:#111827;border-radius:12px;padding:12px}
-        .hero{border-color:#4f46e5}
-        .btn{border:0;border-radius:10px;padding:12px 14px;color:#fff;font-weight:700;cursor:pointer;background:#1d4ed8;font-size:1.1rem}
+        :root{color-scheme:dark;--bg:#0b1220;--panel:#0f172a;--panel2:#111827;--border:#334155;--muted:#94a3b8;--text:#e2e8f0;--ok:#86efac;--warn:#fcd34d;--err:#fca5a5;--note:#c4b5fd}
+        *{box-sizing:border-box}
+        body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at top,#172554 0,#0b1220 42%);color:var(--text)}
+        .wrap{max-width:920px;margin:0 auto;padding:24px}
+        .card{background:rgba(15,23,42,.95);border:1px solid var(--border);border-radius:18px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.35)}
+        .head{display:flex;justify-content:space-between;gap:16px;padding:18px;border-bottom:1px solid var(--border)}
+        .subtitle{color:var(--muted);margin-top:4px}
+        .main{padding:14px;display:grid;grid-template-columns:1fr;gap:14px}
+        .panel{border:1px solid var(--border);background:rgba(17,24,39,.9);border-radius:14px;padding:14px}
+        .hero{border-color:#6366f1}
+        .statusRow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+        .badge{padding:7px 12px;background:#1e293b;border:1px solid var(--border);border-radius:999px;font-size:.9rem;font-weight:800;white-space:nowrap}
+        .badge.ok{background:#14532d;border-color:#22c55e;color:#dcfce7}.badge.err{background:#7f1d1d;border-color:#ef4444;color:#fee2e2}.badge.warn{background:#713f12;border-color:#f59e0b;color:#fef3c7}
+        .btn{border:0;border-radius:11px;padding:12px 14px;color:#fff;font-weight:800;cursor:pointer;background:#1d4ed8;font-size:1rem;transition:transform .08s ease,opacity .15s ease,filter .15s ease}
+        .btn:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-1px)}
         .btn.primary{background:linear-gradient(130deg,#7c3aed,#4f46e5)}
-        .btn:disabled{opacity:.6}
-        .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-        .console{height:360px;overflow:auto;border:1px solid #334155;border-radius:10px;background:#020617;padding:10px;font-family:ui-monospace,monospace;margin-top:10px}
-        #hwBadge{padding:6px 12px;background:#1e293b;border-radius:20px;font-size:0.9rem;font-weight:bold}
-        .line-ok{color:#86efac}
-        .line-warn{color:#fcd34d}
-        .line-err{color:#fca5a5}
-        .line-note{color:#c4b5fd}
+        .btn.secondary{background:#475569}.btn.ghost{background:#1e293b;border:1px solid var(--border)}
+        .btn:disabled{opacity:.55;cursor:not-allowed}
+        .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.row .btn{flex:1 1 180px}
+        .console{height:390px;overflow:auto;border:1px solid var(--border);border-radius:12px;background:#020617;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;margin-top:12px;line-height:1.45}
+        .console div{white-space:pre-wrap}.line-ok{color:var(--ok)}.line-warn{color:var(--warn)}.line-err{color:var(--err)}.line-note{color:var(--note)}
+        .help{margin:10px 0 0;color:var(--muted);font-size:.95rem}.help code{background:#020617;border:1px solid var(--border);border-radius:6px;padding:1px 5px;color:#e0e7ff}
     </style>
 </head>
 <body>
@@ -31,22 +36,27 @@
         <div class="head">
             <div>
                 <h2 style="margin:0">Ink Ops Professional Console</h2>
-                <div style="color:#94a3b8">Simplified operator view for ISO 15693 tag management.</div>
+                <div class="subtitle">Guided PN532 workflow for authorized ISO 15693 tag management.</div>
             </div>
-            <div id="hwBadge">Checking reader...</div>
+            <div class="statusRow">
+                <div id="socketBadge" class="badge warn">Socket connecting...</div>
+                <div id="hwBadge" class="badge">{{ hw_status }}</div>
+            </div>
         </div>
-        
+
         <div class="main">
             <section class="panel hero">
-                <h3>🔥 Ink Clone Workflow</h3>
+                <h3 style="margin-top:0">🔥 Ink Clone Workflow</h3>
                 <button id="burnBtn" class="btn primary" style="width:100%">Start Ink Clone Burn</button>
-                
-                <div class="row">
-                    <button id="scanBtn" class="btn" style="flex: 1">Scan Tag UID</button>
-                    <button id="reconnectBtn" class="btn" style="background:#475569">Reconnect Reader</button>
-                </div>
 
-                <div class="console" id="console">
+                <div class="row">
+                    <button id="scanBtn" class="btn">Scan Tag UID</button>
+                    <button id="reconnectBtn" class="btn secondary">Reconnect Reader</button>
+                    <button id="clearBtn" class="btn ghost" type="button">Clear Console</button>
+                </div>
+                <p class="help">UID backdoor writes are disabled unless the server is started with <code>ENABLE_UID_BACKDOOR=true</code>. Recent operation history is available at <code>/history.json</code>.</p>
+
+                <div class="console" id="console" aria-live="polite">
                     <div class="line-note">[Idle] Ready for operator command.</div>
                 </div>
             </section>
@@ -54,28 +64,44 @@
     </div>
 </div>
 <script>
-    const s=io(),$=id=>document.getElementById(id);
-    const controls=['burnBtn','scanBtn','reconnectBtn'].map($);
-    
-    function busy(v){controls.forEach(b=>b&&(b.disabled=v));}
-    
-    function addLog(t){
-        const d=document.createElement('div');
-        const x=String(t||'');
-        d.textContent=x;
-        d.className=x.includes('✅')?'line-ok':x.includes('⚠️')?'line-warn':x.includes('❌')?'line-err':'line-note';
-        $('console').appendChild(d);
-        $('console').scrollTop=$('console').scrollHeight;
+    const socket = io();
+    const $ = id => document.getElementById(id);
+    const controls = ['burnBtn','scanBtn','reconnectBtn'].map($);
+
+    function busy(value){ controls.forEach(button => button && (button.disabled = value)); }
+
+    function setBadge(element, text, state){
+        element.textContent = text;
+        element.className = `badge ${state || ''}`.trim();
     }
 
-    $('burnBtn').onclick=()=>{busy(true);addLog('🚀 Starting verbose ink clone workflow...');s.emit('start_burn');};
-    $('scanBtn').onclick=()=>{busy(true);addLog('⏳ Initializing target tag scan...');s.emit('scan_tag');};
-    $('reconnectBtn').onclick=()=>{busy(true);s.emit('reconnect_reader');};
+    function addLog(text){
+        const line = document.createElement('div');
+        const message = String(text || '');
+        line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+        line.className = message.includes('✅') ? 'line-ok' : message.includes('⚠️') ? 'line-warn' : message.includes('❌') ? 'line-err' : 'line-note';
+        $('console').appendChild(line);
+        $('console').scrollTop = $('console').scrollHeight;
+    }
 
-    s.on('log_update',m=>addLog(m.data));
-    s.on('action_complete',()=>busy(false));
-    s.on('hw_status_update',m=>$('hwBadge').textContent=m.status==='Connected'?'PN532 Online':m.status);
-    s.emit('refresh_hw_status');
+    $('burnBtn').onclick = () => { busy(true); addLog('🚀 Starting ink clone workflow...'); socket.emit('start_burn'); };
+    $('scanBtn').onclick = () => { busy(true); addLog('⏳ Initializing target tag scan...'); socket.emit('scan_tag'); };
+    $('reconnectBtn').onclick = () => { busy(true); addLog('🔄 Reconnecting reader...'); socket.emit('reconnect_reader'); };
+    $('clearBtn').onclick = () => { $('console').innerHTML = '<div class="line-note">[Idle] Console cleared.</div>'; };
+
+    socket.on('connect', () => { setBadge($('socketBadge'), 'Socket connected', 'ok'); socket.emit('refresh_hw_status'); });
+    socket.on('disconnect', () => { busy(false); setBadge($('socketBadge'), 'Socket disconnected', 'err'); addLog('❌ Lost server connection.'); });
+    socket.on('connect_error', () => { busy(false); setBadge($('socketBadge'), 'Socket error', 'err'); });
+    socket.on('log_update', message => addLog(message.data));
+    socket.on('action_complete', message => {
+        busy(false);
+        if (message && message.status && message.status !== 'success') addLog(`⚠️ Operation finished with status: ${message.status}`);
+    });
+    socket.on('hw_status_update', message => {
+        const status = message.status || 'Unknown';
+        const state = status === 'Connected' ? 'ok' : status.startsWith('Error') || status.startsWith('Unavailable') ? 'err' : 'warn';
+        setBadge($('hwBadge'), status === 'Connected' ? 'PN532 Online' : status, state);
+    });
 </script>
 </body>
 </html>
