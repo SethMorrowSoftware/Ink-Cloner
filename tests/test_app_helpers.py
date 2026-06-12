@@ -21,6 +21,15 @@ class HelperTests(unittest.TestCase):
     def test_format_uid(self):
         self.assertEqual(app.format_uid(bytes([0xE0, 0x07, 0x81])), 'E0-07-81')
 
+    def test_normalize_uid_accepts_common_pn5180_shapes(self):
+        self.assertEqual(app.normalize_uid('E0:07:81:6A:E3:2E:96:32'), bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
+        self.assertEqual(app.normalize_uid(0xE007816AE32E9632), bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
+        self.assertEqual(app.normalize_uid([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]), bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
+
+    def test_validate_iso15693_response_rejects_tag_error(self):
+        with self.assertRaises(RuntimeError):
+            app.validate_iso15693_response(bytes([0x01, 0x0F]))
+
     def test_record_operation_caps_history(self):
         with patch.object(app, 'operation_history', []):
             for index in range(105):
@@ -36,6 +45,7 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json['ok'])
         self.assertIn('hardware_status', response.json)
+        self.assertIn('backend', response.json)
 
 
 if __name__ == '__main__':

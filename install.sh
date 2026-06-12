@@ -15,21 +15,22 @@ fi
 
 echo "==> Installing system dependencies"
 apt-get update
-apt-get install -y python3 python3-venv python3-pip git i2c-tools
+apt-get install -y python3 python3-venv python3-pip git pigpio python3-pigpio
 
-echo "==> Enabling I2C interface"
+echo "==> Enabling SPI interface"
 if command -v raspi-config >/dev/null 2>&1; then
-  raspi-config nonint do_i2c 0 || true
+  raspi-config nonint do_spi 0 || true
 fi
-if ! grep -q '^dtparam=i2c_arm=on' /boot/firmware/config.txt 2>/dev/null; then
+if ! grep -q '^dtparam=spi=on' /boot/firmware/config.txt 2>/dev/null; then
   if [[ -f /boot/firmware/config.txt ]]; then
-    echo 'dtparam=i2c_arm=on' >> /boot/firmware/config.txt
+    echo 'dtparam=spi=on' >> /boot/firmware/config.txt
   elif [[ -f /boot/config.txt ]]; then
-    echo 'dtparam=i2c_arm=on' >> /boot/config.txt
+    echo 'dtparam=spi=on' >> /boot/config.txt
   fi
 fi
 
-usermod -aG i2c "$RUN_USER" || true
+usermod -aG spi,gpio "$RUN_USER" || true
+systemctl enable --now pigpiod || true
 
 echo "==> Installing app into $INSTALL_DIR"
 rm -rf "$INSTALL_DIR"
@@ -48,7 +49,14 @@ CORS_ALLOWED_ORIGINS=*
 PORT=$PORT
 TAG_DETECTION_TIMEOUT_SECONDS=10
 TAG_DETECTION_POLL_SECONDS=0.2
-WRITE_BLOCK_RESPONSE_LENGTH=10
+NFC_READER_BACKEND=pn5180pi
+PN5180_NSS_PIN=8
+PN5180_BUSY_PIN=24
+PN5180_RESET_PIN=23
+PN5180_SPI_CHANNEL=0
+PN5180_SPI_SPEED_HZ=1000000
+PN5180_TAGOMATIC_SERIAL=/dev/ttyACM0
+ISO15693_BLOCK_SIZE=4
 ENABLE_UID_BACKDOOR=false
 EOF
 chmod 640 /etc/default/ink-cloner
@@ -56,7 +64,7 @@ chmod 640 /etc/default/ink-cloner
 echo "==> Installing systemd service"
 cat > /etc/systemd/system/$SERVICE_NAME <<EOF
 [Unit]
-Description=Ink Cloner Flask/SocketIO Service
+Description=Ink Cloner PN5180 Flask/SocketIO Service
 After=network-online.target
 Wants=network-online.target
 
@@ -113,4 +121,4 @@ echo "\nInstall complete."
 echo "Open: http://<device-ip>:$PORT"
 echo "View logs: sudo journalctl -u $SERVICE_NAME -f"
 echo "If remote clients cannot connect, run: sudo ss -ltnp | grep :$PORT"
-echo "If I2C was newly enabled, reboot once: sudo reboot"
+echo "If SPI was newly enabled, reboot once: sudo reboot"
