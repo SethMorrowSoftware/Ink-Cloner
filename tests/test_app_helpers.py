@@ -41,8 +41,10 @@ class HelperTests(unittest.TestCase):
                 self.pins = (nss, busy, reset)
                 self.frames = []
 
-            def transceive(self, frame):
+            def send_data(self, frame):
                 self.frames.append(bytes(frame))
+
+            def receive_data(self):
                 if len(self.frames) == 1:
                     return bytes([0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0])
                 return bytes([0x00])
@@ -55,6 +57,23 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(reader.device.pins, (app.PN5180_NSS_PIN, app.PN5180_BUSY_PIN, app.PN5180_RESET_PIN))
         self.assertEqual(reader.device.frames[0], bytes([0x06, 0x01, 0x00]))
         self.assertEqual(reader.device.frames[1], bytes([0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04]))
+
+    def test_pn5180_reader_writes_magic_uid_backdoor_frame(self):
+        class FakePn5180:
+            def __init__(self, _nss, _busy, _reset):
+                self.frames = []
+
+            def send_data(self, frame):
+                self.frames.append(bytes(frame))
+
+            def receive_data(self):
+                return bytes([0x00])
+
+        with patch.object(app, 'PN5180_CLASS', FakePn5180):
+            reader = app.PN5180Iso15693Reader()
+            reader.write_uid_backdoor(app.TARGET_UID)
+
+        self.assertEqual(reader.device.frames[0], bytes([0x02, 0xB4, 0x00]) + app.TARGET_UID)
 
     def test_record_operation_caps_history(self):
         with patch.object(app, 'operation_history', []):

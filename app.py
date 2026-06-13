@@ -117,6 +117,7 @@ ISO15693_FLAG_INVENTORY = 0x04
 ISO15693_FLAG_ADDRESS = 0x20
 ISO15693_CMD_INVENTORY = 0x01
 ISO15693_CMD_WRITE_SINGLE_BLOCK = 0x21
+ISO15693_CMD_WRITE_UID_BACKDOOR = 0xB4
 
 reader: Optional['PN5180Iso15693Reader'] = None
 hardware_status = 'Disconnected'
@@ -245,6 +246,12 @@ def validate_block_data(data: bytes) -> bytes:
     return data
 
 
+def validate_uid(uid: bytes) -> bytes:
+    if len(uid) != 8:
+        raise ValueError(f'ISO 15693 UID must be 8 bytes, got {len(uid)}')
+    return uid
+
+
 def validate_iso15693_response(response: bytes) -> None:
     if response and response[0] & 0x01:
         error_code = response[1] if len(response) > 1 else 0
@@ -252,7 +259,7 @@ def validate_iso15693_response(response: bytes) -> None:
 
 
 class PN5180Iso15693Reader:
-    """Direct PN5180 ISO 15693 reader using pn5180pi.Pn5180 raw transceive."""
+    """Direct PN5180 ISO 15693 reader using pn5180pi.Pn5180 raw send/receive."""
 
     label = 'PN5180 (pn5180pi raw ISO 15693)'
 
@@ -260,11 +267,14 @@ class PN5180Iso15693Reader:
         if PN5180_CLASS is None:
             raise RuntimeError('Install pn5180pi and confirm it exports pn5180pi.Pn5180')
         self.device = PN5180_CLASS(PN5180_NSS_PIN, PN5180_BUSY_PIN, PN5180_RESET_PIN)
-        if not callable(getattr(self.device, 'transceive', None)):
-            raise RuntimeError('pn5180pi.Pn5180 must expose transceive(frame) for raw ISO 15693 frames')
+        self._send_data = getattr(self.device, 'send_data', None) or getattr(self.device, 'sendData', None)
+        self._receive_data = getattr(self.device, 'receive_data', None) or getattr(self.device, 'receiveData', None)
+        if not callable(self._send_data) or not callable(self._receive_data):
+            raise RuntimeError('pn5180pi.Pn5180 must expose send_data(frame) and receive_data()')
 
-    def transceive(self, frame: bytes) -> bytes:
-        response = self.device.transceive(bytes(frame))
+    def exchange(self, frame: bytes) -> bytes:
+        self._send_data(bytes(frame))
+        response = self._receive_data()
         return bytes(response or b'')
 
     def poll_uid(self) -> Optional[bytes]:
@@ -273,9 +283,10 @@ class PN5180Iso15693Reader:
             ISO15693_CMD_INVENTORY,
             0x00,  # mask length
         ])
-        return parse_iso15693_inventory_response(self.transceive(frame))
+        return parse_iso15693_inventory_response(self.exchange(frame))
 
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
+        uid = validate_uid(uid)
         data = validate_block_data(data)
         if not 0 <= block_index <= 0xFF:
             raise ValueError(f'ISO 15693 block index out of range: {block_index}')
@@ -283,10 +294,12 @@ class PN5180Iso15693Reader:
             ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
             ISO15693_CMD_WRITE_SINGLE_BLOCK,
         ]) + uid[::-1] + bytes([block_index]) + data
-        validate_iso15693_response(self.transceive(frame))
+        validate_iso15693_response(self.exchange(frame))
 
     def write_uid_backdoor(self, uid: bytes) -> None:
-        raise RuntimeError('UID backdoor writes are not implemented for pn5180pi raw ISO 15693')
+        uid = validate_uid(uid)
+        frame = bytes([ISO15693_FLAG_DATA_RATE_HIGH, ISO15693_CMD_WRITE_UID_BACKDOOR, 0x00]) + uid
+        validate_iso15693_response(self.exchange(frame))
 
 
 def emit_action_complete(status: str) -> None:

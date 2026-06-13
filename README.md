@@ -62,7 +62,7 @@ The web UI can still start on a development machine without PN5180 libraries ins
 - `TAG_DETECTION_TIMEOUT_SECONDS` (default `15`, minimum `1`)
 - `TAG_DETECTION_POLL_SECONDS` (default `0.2`, minimum `0.05`)
 - `ISO15693_BLOCK_SIZE` (default `4`, minimum `1`)
-- `ENABLE_UID_BACKDOOR` (default `false`; set to `true` only when you are authorized to write UID backdoor registers and your PN5180 driver supports it)
+- `ENABLE_UID_BACKDOOR` (default `false`; set to `true` only when you are authorized to send the PN5180 magic UID backdoor command to compatible ISO 15693 media)
 
 ## Testing
 ```bash
