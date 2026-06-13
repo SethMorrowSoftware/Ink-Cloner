@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flask + Socket.IO console for supervised PN532 ink-tag operations."""
+"""Flask + Socket.IO console for supervised PN5180 ISO 15693 ink-tag operations."""
 
 import importlib
 import importlib.util
@@ -72,10 +72,8 @@ else:
 
     SocketIO = _MissingWebDependencySocketIO
 
-board = _optional_module('board')
-busio = _optional_module('busio')
-_pn532_i2c_module = _optional_module('adafruit_pn532.i2c')
-PN532_I2C = getattr(_pn532_i2c_module, 'PN532_I2C', None)
+pn5180pi_module = _optional_module('pn5180pi')
+PN5180_CLASS = getattr(pn5180pi_module, 'Pn5180', None)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-me-in-production')
@@ -108,10 +106,19 @@ def env_int(name: str, default: int, *, minimum: int) -> int:
 
 TAG_DETECTION_TIMEOUT_SECONDS = env_float('TAG_DETECTION_TIMEOUT_SECONDS', 15.0, minimum=1.0)
 TAG_DETECTION_POLL_SECONDS = env_float('TAG_DETECTION_POLL_SECONDS', 0.2, minimum=0.05)
-WRITE_BLOCK_RESPONSE_LENGTH = env_int('WRITE_BLOCK_RESPONSE_LENGTH', 10, minimum=1)
+ISO15693_BLOCK_SIZE = env_int('ISO15693_BLOCK_SIZE', 4, minimum=1)
+PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
+PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
+PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
 ENABLE_UID_BACKDOOR = os.getenv('ENABLE_UID_BACKDOOR', 'false').lower() in {'1', 'true', 'yes', 'on'}
 
-pn532 = None
+ISO15693_FLAG_DATA_RATE_HIGH = 0x02
+ISO15693_FLAG_INVENTORY = 0x04
+ISO15693_FLAG_ADDRESS = 0x20
+ISO15693_CMD_INVENTORY = 0x01
+ISO15693_CMD_WRITE_SINGLE_BLOCK = 0x21
+
+reader: Optional['PN5180Iso15693Reader'] = None
 hardware_status = 'Disconnected'
 op_lock = Lock()
 operation_history: list[dict[str, Any]] = []
@@ -161,16 +168,110 @@ def format_uid(uid: bytes) -> str:
     return '-'.join(f'{byte:02X}' for byte in uid)
 
 
+def normalize_uid(value: Any) -> Optional[bytes]:
+    """Normalize an ISO 15693 UID into display order (MSB first, normally starting E0)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.replace(':', '').replace('-', '').replace(' ', '')
+        if len(cleaned) != 16:
+            return None
+        try:
+            return bytes.fromhex(cleaned)
+        except ValueError:
+            return None
+    if isinstance(value, int):
+        if value <= 0:
+            return None
+        return value.to_bytes(8, 'big')
+    if isinstance(value, (bytes, bytearray)):
+        data = bytes(value)
+    elif isinstance(value, (list, tuple)):
+        try:
+            data = bytes(value)
+        except (TypeError, ValueError):
+            return None
+    else:
+        return None
+    return data if len(data) == 8 else None
+
+
+def parse_iso15693_inventory_response(response: Optional[bytes]) -> Optional[bytes]:
+    """Extract a UID from a raw ISO 15693 inventory response.
+
+    A successful inventory response is flags + DSFID + 8-byte UID. ISO 15693
+    transmits UID bytes least-significant byte first, so this returns display
+    order by reversing those 8 bytes.
+    """
+    if not response or len(response) < 10:
+        return None
+    validate_iso15693_response(response)
+    return bytes(response[2:10][::-1])
+
+
 def parse_iso15693_uid(response: Optional[bytes]) -> Optional[bytes]:
-    """Extract a UID from a PN532 InListPassiveTarget response."""
-    if not response or len(response) < 6 or response[0] != 1:
+    """Extract a UID from raw ISO 15693 inventory or legacy PN532 responses."""
+    if not response:
         return None
-    uid_length = response[5]
-    uid_start = 6
-    uid_end = uid_start + uid_length
-    if uid_length <= 0 or len(response) < uid_end:
-        return None
-    return bytes(response[uid_start:uid_end])
+    if len(response) >= 6 and response[0] == 1:
+        uid_length = response[5]
+        uid_start = 6
+        uid_end = uid_start + uid_length
+        if uid_length > 0 and len(response) >= uid_end:
+            return bytes(response[uid_start:uid_end])
+    if len(response) >= 10:
+        return parse_iso15693_inventory_response(response)
+    return normalize_uid(response)
+
+
+def validate_block_data(data: bytes) -> bytes:
+    if len(data) != ISO15693_BLOCK_SIZE:
+        raise ValueError(f'ISO 15693 block must be {ISO15693_BLOCK_SIZE} bytes, got {len(data)}')
+    return data
+
+
+def validate_iso15693_response(response: bytes) -> None:
+    if response and response[0] & 0x01:
+        error_code = response[1] if len(response) > 1 else 0
+        raise RuntimeError(f'ISO 15693 tag returned error 0x{error_code:02X}')
+
+
+class PN5180Iso15693Reader:
+    """Direct PN5180 ISO 15693 reader using pn5180pi.Pn5180 raw transceive."""
+
+    label = 'PN5180 (pn5180pi raw ISO 15693)'
+
+    def __init__(self) -> None:
+        if PN5180_CLASS is None:
+            raise RuntimeError('Install pn5180pi and confirm it exports pn5180pi.Pn5180')
+        self.device = PN5180_CLASS(PN5180_NSS_PIN, PN5180_BUSY_PIN, PN5180_RESET_PIN)
+        if not callable(getattr(self.device, 'transceive', None)):
+            raise RuntimeError('pn5180pi.Pn5180 must expose transceive(frame) for raw ISO 15693 frames')
+
+    def transceive(self, frame: bytes) -> bytes:
+        response = self.device.transceive(bytes(frame))
+        return bytes(response or b'')
+
+    def poll_uid(self) -> Optional[bytes]:
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
+            ISO15693_CMD_INVENTORY,
+            0x00,  # mask length
+        ])
+        return parse_iso15693_inventory_response(self.transceive(frame))
+
+    def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
+        data = validate_block_data(data)
+        if not 0 <= block_index <= 0xFF:
+            raise ValueError(f'ISO 15693 block index out of range: {block_index}')
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_WRITE_SINGLE_BLOCK,
+        ]) + uid[::-1] + bytes([block_index]) + data
+        validate_iso15693_response(self.transceive(frame))
+
+    def write_uid_backdoor(self, uid: bytes) -> None:
+        raise RuntimeError('UID backdoor writes are not implemented for pn5180pi raw ISO 15693')
 
 
 def emit_action_complete(status: str) -> None:
@@ -196,24 +297,18 @@ def record_operation(name: str, status: str, **details: Any) -> None:
 
 
 def initialize_hardware() -> None:
-    global pn532, hardware_status
-    if not all([board, busio, PN532_I2C]):
-        pn532 = None
-        hardware_status = 'Unavailable: install PN532 hardware libraries'
-        return
+    global reader, hardware_status
     try:
-        i2c = busio.I2C(board.SCL, board.SDA)
-        pn532 = PN532_I2C(i2c, debug=False)
-        pn532.SAM_configuration()
-        hardware_status = 'Connected'
+        reader = PN5180Iso15693Reader()
+        hardware_status = f'Connected: {reader.label}'
     except Exception as exc:
-        pn532 = None
+        reader = None
         hardware_status = f'Error: {exc}'
 
 
 def ensure_reader() -> bool:
-    if not pn532:
-        log_to_web(f'❌ PN532 reader offline ({hardware_status}).')
+    if not reader:
+        log_to_web(f'❌ PN5180 reader offline ({hardware_status}).')
         emit_action_complete('fail')
         return False
     return True
@@ -223,10 +318,10 @@ def poll_for_iso15693_tag() -> Optional[bytes]:
     timeout = time.monotonic() + TAG_DETECTION_TIMEOUT_SECONDS
     while time.monotonic() < timeout:
         try:
-            response = pn532.call_function(0x4A, params=bytes([0x01, 0x01]), timeout=1.0)
-            uid = parse_iso15693_uid(response)
-            if uid:
-                return uid
+            if reader:
+                uid = reader.poll_uid()
+                if uid:
+                    return uid
         except Exception as exc:
             log_to_web(f'⚠️ Reader poll error: {exc}')
         time.sleep(TAG_DETECTION_POLL_SECONDS)
@@ -237,14 +332,14 @@ def run_tag_scan() -> None:
     if not ensure_reader():
         record_operation('scan_tag', 'fail', reason='reader_offline')
         return
-    log_to_web(f'⏳ Waiting up to {TAG_DETECTION_TIMEOUT_SECONDS:g}s for an ISO 15693 tag...')
+    log_to_web(f'⏳ Waiting up to {TAG_DETECTION_TIMEOUT_SECONDS:g}s for an ISO 15693 / NFC-V sticker...')
     uid = poll_for_iso15693_tag()
     if not uid:
-        log_to_web('❌ No ISO 15693 tag detected.')
+        log_to_web('❌ No ISO 15693 / NFC-V sticker detected.')
         record_operation('scan_tag', 'fail', reason='timeout')
         emit_action_complete('fail')
         return
-    log_to_web(f'✅ Detected UID: {format_uid(uid)}')
+    log_to_web(f'✅ Detected NFC-V UID: {format_uid(uid)}')
     record_operation('scan_tag', 'success', uid=format_uid(uid))
     emit_action_complete('success')
 
@@ -252,8 +347,8 @@ def run_tag_scan() -> None:
 def run_reconnect() -> None:
     initialize_hardware()
     update_ui_status()
-    if pn532:
-        log_to_web('✅ Reconnected to PN532 reader.')
+    if reader:
+        log_to_web(f'✅ Reconnected to {reader.label}.')
         record_operation('reconnect_reader', 'success')
         emit_action_complete('success')
     else:
@@ -262,17 +357,15 @@ def run_reconnect() -> None:
         emit_action_complete('fail')
 
 
-def write_data_blocks() -> tuple[int, list[int]]:
+def write_data_blocks(uid: bytes) -> tuple[int, list[int]]:
     written = 0
     failed_blocks = []
     total_blocks = len(CLEARED_DATA_BLOCKS)
     for block_index, block_bytes in enumerate(CLEARED_DATA_BLOCKS):
         try:
-            pn532.call_function(
-                0x42,
-                params=bytes([0x42, 0x21, block_index]) + block_bytes,
-                response_length=WRITE_BLOCK_RESPONSE_LENGTH,
-            )
+            if not reader:
+                raise RuntimeError('reader offline')
+            reader.write_block(uid, block_index, block_bytes)
             written += 1
         except Exception as exc:
             failed_blocks.append(block_index)
@@ -288,35 +381,33 @@ def run_burn_sequence() -> None:
         return
 
     total_blocks = len(CLEARED_DATA_BLOCKS)
-    log_to_web('🚀 Ink Clone Protocol started.')
-    log_to_web('⏳ [STEP 1/4] Place authorized writable ISO 15693 tag on the reader...')
+    log_to_web('🚀 PN5180 NFC-V ink clone protocol started.')
+    log_to_web('⏳ [STEP 1/4] Place one authorized writable ISO 15693 / NFC-V sticker on the PN5180 antenna...')
     uid = poll_for_iso15693_tag()
     if not uid:
-        log_to_web('❌ Timeout: no tag found.')
+        log_to_web('❌ Timeout: no NFC-V sticker found.')
         record_operation('burn', 'fail', reason='timeout')
         emit_action_complete('fail')
         return
 
-    log_to_web(f'🎯 [STEP 2/4] Tag detected: {format_uid(uid)}')
-    log_to_web(f'🧱 [STEP 3/4] Writing {total_blocks} data blocks...')
-    written, failed_blocks = write_data_blocks()
+    log_to_web(f'🎯 [STEP 2/4] NFC-V sticker detected: {format_uid(uid)}')
+    log_to_web(f'🧱 [STEP 3/4] Writing {total_blocks} ISO 15693 blocks ({ISO15693_BLOCK_SIZE} bytes each)...')
+    written, failed_blocks = write_data_blocks(uid)
 
     uid_backdoor_status = 'disabled'
     log_to_web('🔐 [STEP 4/4] UID backdoor write policy check...')
     if ENABLE_UID_BACKDOOR:
         try:
-            pn532.call_function(
-                0x42,
-                params=bytes([0x42, 0xB4, 0x00]) + TARGET_UID,
-                response_length=WRITE_BLOCK_RESPONSE_LENGTH,
-            )
+            if not reader:
+                raise RuntimeError('reader offline')
+            reader.write_uid_backdoor(TARGET_UID)
             uid_backdoor_status = 'success'
             log_to_web(f'   • Master UID set to: {format_uid(TARGET_UID)}')
         except Exception as exc:
             uid_backdoor_status = 'fail'
             log_to_web(f'   ⚠️ UID backdoor write failed: {exc}')
     else:
-        log_to_web('   • Skipped UID backdoor write; set ENABLE_UID_BACKDOOR=true to enable it.')
+        log_to_web('   • Skipped UID backdoor write; set ENABLE_UID_BACKDOOR=true only for authorized magic UID media.')
 
     if failed_blocks or uid_backdoor_status == 'fail':
         status = 'fail'
