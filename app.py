@@ -73,7 +73,7 @@ else:
     SocketIO = _MissingWebDependencySocketIO
 
 pn5180pi_module = _optional_module('pn5180pi')
-pn5180_tagomatic_module = _optional_module('pn5180_tagomatic')
+PN5180_CLASS = getattr(pn5180pi_module, 'Pn5180', None)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-me-in-production')
@@ -107,16 +107,18 @@ def env_int(name: str, default: int, *, minimum: int) -> int:
 TAG_DETECTION_TIMEOUT_SECONDS = env_float('TAG_DETECTION_TIMEOUT_SECONDS', 15.0, minimum=1.0)
 TAG_DETECTION_POLL_SECONDS = env_float('TAG_DETECTION_POLL_SECONDS', 0.2, minimum=0.05)
 ISO15693_BLOCK_SIZE = env_int('ISO15693_BLOCK_SIZE', 4, minimum=1)
-NFC_READER_BACKEND = os.getenv('NFC_READER_BACKEND', 'pn5180pi').strip().lower()
-PN5180_TAGOMATIC_SERIAL = os.getenv('PN5180_TAGOMATIC_SERIAL', '/dev/ttyACM0')
 PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
-PN5180_SPI_CHANNEL = env_int('PN5180_SPI_CHANNEL', 0, minimum=0)
-PN5180_SPI_SPEED_HZ = env_int('PN5180_SPI_SPEED_HZ', 1_000_000, minimum=100_000)
 ENABLE_UID_BACKDOOR = os.getenv('ENABLE_UID_BACKDOOR', 'false').lower() in {'1', 'true', 'yes', 'on'}
 
-reader: Optional['Iso15693Reader'] = None
+ISO15693_FLAG_DATA_RATE_HIGH = 0x02
+ISO15693_FLAG_INVENTORY = 0x04
+ISO15693_FLAG_ADDRESS = 0x20
+ISO15693_CMD_INVENTORY = 0x01
+ISO15693_CMD_WRITE_SINGLE_BLOCK = 0x21
+
+reader: Optional['PN5180Iso15693Reader'] = None
 hardware_status = 'Disconnected'
 op_lock = Lock()
 operation_history: list[dict[str, Any]] = []
@@ -182,23 +184,17 @@ def format_uid(uid: bytes) -> str:
 
 
 def normalize_uid(value: Any) -> Optional[bytes]:
-    """Normalize common PN5180 library UID return shapes to an 8-byte value."""
+    """Normalize an ISO 15693 UID into display order (MSB first, normally starting E0)."""
     if value is None:
         return None
-    if hasattr(value, 'uid'):
-        return normalize_uid(getattr(value, 'uid'))
-    if hasattr(value, 'nfc_id'):
-        return normalize_uid(getattr(value, 'nfc_id'))
-    if hasattr(value, 'NfcId'):
-        return normalize_uid(getattr(value, 'NfcId'))
     if isinstance(value, str):
         cleaned = value.replace(':', '').replace('-', '').replace(' ', '')
-        if len(cleaned) == 16:
-            try:
-                return bytes.fromhex(cleaned)
-            except ValueError:
-                return None
-        return None
+        if len(cleaned) != 16:
+            return None
+        try:
+            return bytes.fromhex(cleaned)
+        except ValueError:
+            return None
     if isinstance(value, int):
         if value <= 0:
             return None
@@ -206,25 +202,30 @@ def normalize_uid(value: Any) -> Optional[bytes]:
     if isinstance(value, (bytes, bytearray)):
         data = bytes(value)
     elif isinstance(value, (list, tuple)):
-        if value and not isinstance(value[0], int):
-            return normalize_uid(value[0])
         try:
             data = bytes(value)
         except (TypeError, ValueError):
             return None
     else:
         return None
+    return data if len(data) == 8 else None
 
-    if len(data) == 8:
-        return data
-    if len(data) >= 10:
-        # ISO 15693 inventory responses commonly include flags + DSFID + 8-byte UID.
-        return data[-8:]
-    return None
+
+def parse_iso15693_inventory_response(response: Optional[bytes]) -> Optional[bytes]:
+    """Extract a UID from a raw ISO 15693 inventory response.
+
+    A successful inventory response is flags + DSFID + 8-byte UID. ISO 15693
+    transmits UID bytes least-significant byte first, so this returns display
+    order by reversing those 8 bytes.
+    """
+    if not response or len(response) < 10:
+        return None
+    validate_iso15693_response(response)
+    return bytes(response[2:10][::-1])
 
 
 def parse_iso15693_uid(response: Optional[bytes]) -> Optional[bytes]:
-    """Extract a UID from legacy PN532 InListPassiveTarget or raw ISO 15693 responses."""
+    """Extract a UID from raw ISO 15693 inventory or legacy PN532 responses."""
     if not response:
         return None
     if len(response) >= 6 and response[0] == 1:
@@ -233,169 +234,9 @@ def parse_iso15693_uid(response: Optional[bytes]) -> Optional[bytes]:
         uid_end = uid_start + uid_length
         if uid_length > 0 and len(response) >= uid_end:
             return bytes(response[uid_start:uid_end])
+    if len(response) >= 10:
+        return parse_iso15693_inventory_response(response)
     return normalize_uid(response)
-
-
-def call_first_available(target: Any, method_names: tuple[str, ...], *args, **kwargs) -> Any:
-    for method_name in method_names:
-        method = getattr(target, method_name, None)
-        if callable(method):
-            return method(*args, **kwargs)
-    raise AttributeError(f'{target!r} does not expose any of: {", ".join(method_names)}')
-
-
-class PN5180PiReader:
-    """Adapter for direct Raspberry Pi PN5180 boards using the ``pn5180pi`` package."""
-
-    label = 'PN5180 (SPI/GPIO via pn5180pi)'
-
-    def __init__(self, module: Any):
-        driver_class = self._find_driver_class(module)
-        self.device = self._instantiate_driver(driver_class)
-        self._configure_device()
-
-    @staticmethod
-    def _find_driver_class(module: Any) -> Any:
-        for class_name in ('PN5180', 'Pn5180', 'PN5180Pi', 'Pn5180Pi'):
-            driver_class = getattr(module, class_name, None)
-            if driver_class is not None:
-                return driver_class
-        raise RuntimeError('pn5180pi is installed, but no PN5180 driver class was found')
-
-    @staticmethod
-    def _instantiate_driver(driver_class: Any) -> Any:
-        attempts = (
-            lambda: driver_class(PN5180_NSS_PIN, PN5180_BUSY_PIN, PN5180_RESET_PIN),
-            lambda: driver_class(nss=PN5180_NSS_PIN, busy=PN5180_BUSY_PIN, reset=PN5180_RESET_PIN),
-            lambda: driver_class(nss_pin=PN5180_NSS_PIN, busy_pin=PN5180_BUSY_PIN, reset_pin=PN5180_RESET_PIN),
-            lambda: driver_class(PN5180_SPI_CHANNEL, PN5180_NSS_PIN, PN5180_BUSY_PIN, PN5180_RESET_PIN),
-            lambda: driver_class(spi_channel=PN5180_SPI_CHANNEL, spi_speed_hz=PN5180_SPI_SPEED_HZ,
-                                 nss_pin=PN5180_NSS_PIN, busy_pin=PN5180_BUSY_PIN,
-                                 reset_pin=PN5180_RESET_PIN),
-            lambda: driver_class(),
-        )
-        last_error: Optional[Exception] = None
-        for attempt in attempts:
-            try:
-                return attempt()
-            except TypeError as exc:
-                last_error = exc
-        raise RuntimeError(f'Unable to construct pn5180pi driver: {last_error}')
-
-    def _configure_device(self) -> None:
-        for method_names in (
-            ('begin', 'init', 'initialize', 'reset'),
-            ('setup_rf', 'setupRF', 'setup_iso15693', 'setupISO15693'),
-            ('rf_on', 'rfOn', 'turn_rf_on', 'activate_rf_field'),
-        ):
-            try:
-                call_first_available(self.device, method_names)
-            except AttributeError:
-                continue
-
-    def poll_uid(self) -> Optional[bytes]:
-        method_names = ('inventory', 'inventory_iso15693', 'get_inventory', 'getInventory', 'read_uid', 'poll_uid')
-        last_error: Optional[Exception] = None
-        for method_name in method_names:
-            method = getattr(self.device, method_name, None)
-            if not callable(method):
-                continue
-            uid_buffer = bytearray(8)
-            for attempt in (lambda: method(), lambda: method(uid_buffer)):
-                try:
-                    result = attempt()
-                    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], int):
-                        return normalize_uid(result[1]) if result[0] else None
-                    if isinstance(result, int) and result > 0 and uid_buffer != bytearray(8):
-                        return normalize_uid(uid_buffer)
-                    return normalize_uid(result)
-                except TypeError as exc:
-                    last_error = exc
-                    continue
-        if last_error:
-            raise last_error
-        raise AttributeError(f'{self.device!r} does not expose any of: {", ".join(method_names)}')
-
-    def _transceive_iso15693(self, frame: bytes) -> bytes:
-        response = call_first_available(
-            self.device,
-            ('transceive_iso15693', 'transceiveISO15693', 'iso15693_transceive', 'send_iso15693', 'sendData'),
-            frame,
-        )
-        return bytes(response or b'')
-
-    def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
-        data = validate_block_data(data)
-        last_error: Optional[Exception] = None
-        for method_name in ('write_single_block', 'writeSingleBlock', 'write_block', 'writeBlock'):
-            method = getattr(self.device, method_name, None)
-            if not callable(method):
-                continue
-            attempts = (
-                lambda: method(uid, block_index, data, len(data)),
-                lambda: method(uid, block_index, data),
-                lambda: method(block_index, data),
-            )
-            for attempt in attempts:
-                try:
-                    attempt()
-                    return
-                except TypeError as exc:
-                    last_error = exc
-                    continue
-        if last_error:
-            raise last_error
-
-        # Fallback for libraries exposing only raw ISO 15693 transceive.
-        response = self._transceive_iso15693(bytes([0x22, 0x21]) + uid[::-1] + bytes([block_index]) + data)
-        validate_iso15693_response(response)
-
-    def write_uid_backdoor(self, uid: bytes) -> None:
-        method = getattr(self.device, 'write_uid_backdoor', None) or getattr(self.device, 'writeUIDBackdoor', None)
-        if not callable(method):
-            raise RuntimeError('Configured PN5180 driver does not expose UID backdoor writes')
-        method(uid)
-
-
-class TagomaticReader:
-    """Adapter for PN5180-tagomatic USB/serial firmware."""
-
-    label = 'PN5180-tagomatic (USB serial)'
-
-    def __init__(self, module: Any):
-        self.module = module
-        self.reader = module.PN5180(PN5180_TAGOMATIC_SERIAL)
-        enter = getattr(self.reader, '__enter__', None)
-        if callable(enter):
-            enter()
-
-    def _start_iso15693_session(self):
-        tx_protocol = getattr(getattr(self.module, 'TxProtocol', object), 'ISO_15693_26', 0x0D)
-        rx_protocol = getattr(getattr(self.module, 'RxProtocol', object), 'ISO_15693_26', 0x8D)
-        return self.reader.start_session(tx_protocol, rx_protocol)
-
-    def poll_uid(self) -> Optional[bytes]:
-        with self._start_iso15693_session() as session:
-            card = call_first_available(
-                session,
-                ('connect_one_iso15693', 'connect_one_iso15693_card', 'connectOneIso15693', 'listen_iso15693'),
-            )
-            return normalize_uid(card)
-
-    def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
-        data = validate_block_data(data)
-        with self._start_iso15693_session() as session:
-            card = call_first_available(
-                session,
-                ('connect_one_iso15693', 'connect_one_iso15693_card', 'connectOneIso15693', 'listen_iso15693'),
-            )
-            card_uid = normalize_uid(card)
-            if card_uid and card_uid != uid:
-                raise RuntimeError(f'tag changed during write: expected {format_uid(uid)}, saw {format_uid(card_uid)}')
-            call_first_available(card, ('write_single_block', 'writeSingleBlock', 'write_block', 'writeBlock'), block_index, data)
-
-    def write_uid_backdoor(self, uid: bytes) -> None:
-        raise RuntimeError('PN5180-tagomatic does not expose UID backdoor writes')
 
 
 def validate_block_data(data: bytes) -> bytes:
@@ -408,6 +249,44 @@ def validate_iso15693_response(response: bytes) -> None:
     if response and response[0] & 0x01:
         error_code = response[1] if len(response) > 1 else 0
         raise RuntimeError(f'ISO 15693 tag returned error 0x{error_code:02X}')
+
+
+class PN5180Iso15693Reader:
+    """Direct PN5180 ISO 15693 reader using pn5180pi.Pn5180 raw transceive."""
+
+    label = 'PN5180 (pn5180pi raw ISO 15693)'
+
+    def __init__(self) -> None:
+        if PN5180_CLASS is None:
+            raise RuntimeError('Install pn5180pi and confirm it exports pn5180pi.Pn5180')
+        self.device = PN5180_CLASS(PN5180_NSS_PIN, PN5180_BUSY_PIN, PN5180_RESET_PIN)
+        if not callable(getattr(self.device, 'transceive', None)):
+            raise RuntimeError('pn5180pi.Pn5180 must expose transceive(frame) for raw ISO 15693 frames')
+
+    def transceive(self, frame: bytes) -> bytes:
+        response = self.device.transceive(bytes(frame))
+        return bytes(response or b'')
+
+    def poll_uid(self) -> Optional[bytes]:
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
+            ISO15693_CMD_INVENTORY,
+            0x00,  # mask length
+        ])
+        return parse_iso15693_inventory_response(self.transceive(frame))
+
+    def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
+        data = validate_block_data(data)
+        if not 0 <= block_index <= 0xFF:
+            raise ValueError(f'ISO 15693 block index out of range: {block_index}')
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_WRITE_SINGLE_BLOCK,
+        ]) + uid[::-1] + bytes([block_index]) + data
+        validate_iso15693_response(self.transceive(frame))
+
+    def write_uid_backdoor(self, uid: bytes) -> None:
+        raise RuntimeError('UID backdoor writes are not implemented for pn5180pi raw ISO 15693')
 
 
 def emit_action_complete(status: str) -> None:
@@ -435,22 +314,7 @@ def record_operation(name: str, status: str, **details: Any) -> None:
 def initialize_hardware() -> None:
     global reader, hardware_status
     try:
-        if NFC_READER_BACKEND in {'pn5180pi', 'pn5180', 'spi'}:
-            if pn5180pi_module is None:
-                reader = None
-                hardware_status = 'Unavailable: install pn5180pi and enable pigpiod/SPI'
-                return
-            reader = PN5180PiReader(pn5180pi_module)
-        elif NFC_READER_BACKEND in {'tagomatic', 'pn5180-tagomatic', 'serial'}:
-            if pn5180_tagomatic_module is None:
-                reader = None
-                hardware_status = 'Unavailable: install pn5180-tagomatic and flash its PN5180 firmware'
-                return
-            reader = TagomaticReader(pn5180_tagomatic_module)
-        else:
-            reader = None
-            hardware_status = f'Unavailable: unknown NFC_READER_BACKEND={NFC_READER_BACKEND}'
-            return
+        reader = PN5180Iso15693Reader()
         hardware_status = f'Connected: {reader.label}'
     except Exception as exc:
         reader = None
@@ -500,7 +364,7 @@ def run_reconnect() -> None:
     update_ui_status()
     if reader:
         log_to_web(f'✅ Reconnected to {reader.label}.')
-        record_operation('reconnect_reader', 'success', backend=NFC_READER_BACKEND)
+        record_operation('reconnect_reader', 'success')
         emit_action_complete('success')
     else:
         log_to_web(f'❌ Reconnect failed: {hardware_status}')

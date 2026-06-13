@@ -21,6 +21,10 @@ class HelperTests(unittest.TestCase):
     def test_format_uid(self):
         self.assertEqual(app.format_uid(bytes([0xE0, 0x07, 0x81])), 'E0-07-81')
 
+    def test_parse_raw_iso15693_inventory_response_reverses_wire_uid(self):
+        response = bytes([0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0])
+        self.assertEqual(app.parse_iso15693_inventory_response(response), bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
+
     def test_normalize_uid_accepts_common_pn5180_shapes(self):
         self.assertEqual(app.normalize_uid('E0:07:81:6A:E3:2E:96:32'), bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
         self.assertEqual(app.normalize_uid(0xE007816AE32E9632), bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
@@ -29,6 +33,28 @@ class HelperTests(unittest.TestCase):
     def test_validate_iso15693_response_rejects_tag_error(self):
         with self.assertRaises(RuntimeError):
             app.validate_iso15693_response(bytes([0x01, 0x0F]))
+
+
+    def test_pn5180_reader_uses_raw_iso15693_frames(self):
+        class FakePn5180:
+            def __init__(self, nss, busy, reset):
+                self.pins = (nss, busy, reset)
+                self.frames = []
+
+            def transceive(self, frame):
+                self.frames.append(bytes(frame))
+                if len(self.frames) == 1:
+                    return bytes([0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0])
+                return bytes([0x00])
+
+        with patch.object(app, 'PN5180_CLASS', FakePn5180):
+            reader = app.PN5180Iso15693Reader()
+            uid = reader.poll_uid()
+            reader.write_block(uid, 5, bytes([1, 2, 3, 4]))
+
+        self.assertEqual(reader.device.pins, (app.PN5180_NSS_PIN, app.PN5180_BUSY_PIN, app.PN5180_RESET_PIN))
+        self.assertEqual(reader.device.frames[0], bytes([0x06, 0x01, 0x00]))
+        self.assertEqual(reader.device.frames[1], bytes([0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04]))
 
     def test_record_operation_caps_history(self):
         with patch.object(app, 'operation_history', []):
