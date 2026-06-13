@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ink Ops Pro</title>
+    <title>Ink Ops PN5180</title>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <style>
         :root{color-scheme:dark;--bg:#0b1220;--panel:#0f172a;--panel2:#111827;--border:#334155;--muted:#94a3b8;--text:#e2e8f0;--ok:#86efac;--warn:#fcd34d;--err:#fca5a5;--note:#c4b5fd}
@@ -35,8 +35,8 @@
     <div class="card">
         <div class="head">
             <div>
-                <h2 style="margin:0">Ink Ops Professional Console</h2>
-                <div class="subtitle">Guided PN532 workflow for authorized ISO 15693 tag management.</div>
+                <h2 style="margin:0">Ink Ops PN5180 Console</h2>
+                <div class="subtitle">Guided PN5180 workflow for authorized ISO 15693 / NFC-V sticker management.</div>
             </div>
             <div class="statusRow">
                 <div id="socketBadge" class="badge warn">Socket connecting...</div>
@@ -50,11 +50,11 @@
                 <button id="burnBtn" class="btn primary" style="width:100%">Start Ink Clone Burn</button>
 
                 <div class="row">
-                    <button id="scanBtn" class="btn">Scan Tag UID</button>
+                    <button id="scanBtn" class="btn">Scan NFC-V UID</button>
                     <button id="reconnectBtn" class="btn secondary">Reconnect Reader</button>
                     <button id="clearBtn" class="btn ghost" type="button">Clear Console</button>
                 </div>
-                <p class="help">UID backdoor writes are disabled unless the server is started with <code>ENABLE_UID_BACKDOOR=true</code>. Recent operation history is available at <code>/history.json</code>.</p>
+                <p class="help">Uses pn5180pi with raw ISO 15693 / NFC-V frames. UID backdoor writes are disabled unless the server is started with <code>ENABLE_UID_BACKDOOR=true</code>. Recent operation history is available at <code>/history.json</code>.</p>
 
                 <div class="console" id="console" aria-live="polite">
                     <div class="line-note">[Idle] Ready for operator command.</div>
@@ -99,8 +99,8 @@
     });
     socket.on('hw_status_update', message => {
         const status = message.status || 'Unknown';
-        const state = status === 'Connected' ? 'ok' : status.startsWith('Error') || status.startsWith('Unavailable') ? 'err' : 'warn';
-        setBadge($('hwBadge'), status === 'Connected' ? 'PN532 Online' : status, state);
+        const state = status.startsWith('Connected') ? 'ok' : status.startsWith('Error') || status.startsWith('Unavailable') ? 'err' : 'warn';
+        setBadge($('hwBadge'), status.startsWith('Connected') ? 'PN5180 Online' : status, state);
     });
 </script>
 </body>
