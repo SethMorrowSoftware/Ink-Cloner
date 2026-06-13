@@ -71,6 +71,7 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json['ok'])
         self.assertIn('hardware_status', response.json)
+        self.assertIn('backend', response.json)
 
 
 if __name__ == '__main__':

@@ -8,7 +8,7 @@ import os
 import time
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any, Optional
+from typing import Any, Optional, Protocol
 
 
 def _optional_module(name: str) -> Any:
@@ -158,6 +158,21 @@ CLEARED_DATA_BLOCKS = [
     bytes([0x7C, 0x7C, 0xC6, 0xBF]), bytes([0xE3, 0x7B, 0xD3, 0x00]),
     bytes([0x00, 0x00, 0x00, 0x00]), bytes([0x00, 0x00, 0x00, 0x00])
 ]
+
+
+class Iso15693Reader(Protocol):
+    """Minimal reader contract used by the Flask workflow."""
+
+    label: str
+
+    def poll_uid(self) -> Optional[bytes]:
+        """Return one ISO 15693 UID when a tag is present."""
+
+    def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
+        """Write one ISO 15693 memory block."""
+
+    def write_uid_backdoor(self, uid: bytes) -> None:
+        """Write a vendor-specific UID backdoor register when supported."""
 
 
 def utc_now_iso() -> str:
@@ -353,7 +368,7 @@ def run_reconnect() -> None:
         emit_action_complete('success')
     else:
         log_to_web(f'❌ Reconnect failed: {hardware_status}')
-        record_operation('reconnect_reader', 'fail', status=hardware_status)
+        record_operation('reconnect_reader', 'fail', status=hardware_status, backend=NFC_READER_BACKEND)
         emit_action_complete('fail')
 
 
@@ -423,6 +438,7 @@ def run_burn_sequence() -> None:
         blocks_written=written,
         failed_blocks=failed_blocks,
         uid_backdoor=uid_backdoor_status,
+        backend=NFC_READER_BACKEND,
     )
     emit_action_complete(status)
 
@@ -444,7 +460,7 @@ def with_lock(fn, *args) -> None:
 
 @app.route('/')
 def index():
-    return render_template('index.html', hw_status=hardware_status)
+    return render_template('index.html', hw_status=hardware_status, backend=NFC_READER_BACKEND)
 
 
 @app.route('/favicon.ico')
@@ -454,7 +470,7 @@ def favicon():
 
 @app.route('/healthz')
 def healthz():
-    return jsonify({'ok': True, 'hardware_status': hardware_status})
+    return jsonify({'ok': True, 'hardware_status': hardware_status, 'backend': NFC_READER_BACKEND})
 
 
 @app.route('/history.json')
