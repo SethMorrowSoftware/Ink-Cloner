@@ -111,6 +111,7 @@ PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
 ENABLE_UID_BACKDOOR = os.getenv('ENABLE_UID_BACKDOOR', 'false').lower() in {'1', 'true', 'yes', 'on'}
+NFC_READER_BACKEND = 'pn5180pi'
 
 ISO15693_FLAG_DATA_RATE_HIGH = 0x02
 ISO15693_FLAG_INVENTORY = 0x04
@@ -324,6 +325,18 @@ def record_operation(name: str, status: str, **details: Any) -> None:
     del operation_history[:-100]
 
 
+def describe_hardware_error(exc: Exception) -> str:
+    """Return an operator-friendly PN5180 initialization error."""
+    message = str(exc)
+    if 'No I2C device at address' in message:
+        return (
+            f'{message}. This app uses a direct PN5180 SPI reader, not an I2C reader at 0x24; '
+            'confirm the installed pn5180pi package is selected, SPI is enabled, pigpiod is running, '
+            'and the PN5180 NSS/BUSY/RESET/MOSI/MISO/SCK pins match the README wiring.'
+        )
+    return message
+
+
 def initialize_hardware() -> None:
     global reader, hardware_status
     try:
@@ -331,7 +344,7 @@ def initialize_hardware() -> None:
         hardware_status = f'Connected: {reader.label}'
     except Exception as exc:
         reader = None
-        hardware_status = f'Error: {exc}'
+        hardware_status = f'Error: {describe_hardware_error(exc)}'
 
 
 def ensure_reader() -> bool:
