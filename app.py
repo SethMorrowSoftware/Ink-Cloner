@@ -19,7 +19,10 @@ def _optional_module(name: str) -> Any:
         module_path.append(part)
         if importlib.util.find_spec('.'.join(module_path)) is None:
             return None
-    return importlib.import_module(name)
+    try:
+        return importlib.import_module(name)
+    except Exception:
+        return None
 
 
 flask_module = _optional_module('flask')
@@ -329,16 +332,28 @@ class DirectSpiPN5180Iso15693Reader:
         self._spi.writebytes(frame)
         self._wait_ready()
 
-    def _read(self, length: int) -> list[int]:
-        return self._spi.readbytes(length)
+    def _transfer(self, frame: list[int]) -> list[int]:
+        transfer = getattr(self._spi, 'xfer2', None) or getattr(self._spi, 'xfer3', None)
+        if not callable(transfer):
+            raise RuntimeError('spidev must expose xfer2() or xfer3() for PN5180 read transactions')
+        self._wait_ready()
+        response = transfer(frame)
+        self._wait_ready()
+        return response
+
+    def _read_register(self, register: int) -> list[int]:
+        response = self._transfer([0x04, register, 0x00, 0x00, 0x00, 0x00])
+        return response[2:6]
+
+    def _read_data(self, length: int) -> list[int]:
+        response = self._transfer([0x0A, 0x00] + ([0x00] * length))
+        return response[2:2 + length]
 
     def _card_has_responded(self) -> bool:
         deadline = time.monotonic() + PN5180_RESPONSE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
-            self._send([0x04, 0x13])  # READ_REGISTER RX_STATUS
-            rx_status = self._read(4)
-            self._send([0x04, 0x02])  # READ_REGISTER IRQ_STATUS
-            self._read(4)
+            rx_status = self._read_register(0x13)  # RX_STATUS
+            self._read_register(0x02)  # IRQ_STATUS
             self._bytes_in_card_buffer = rx_status[0] if rx_status else 0
             if self._bytes_in_card_buffer > 0:
                 return True
@@ -357,8 +372,7 @@ class DirectSpiPN5180Iso15693Reader:
         self._send([0x09, 0x00] + list(frame))  # SEND_DATA, complete bytes
         response = b''
         if self._card_has_responded():
-            self._send([0x0A, 0x00])  # READ_DATA
-            response = bytes(self._read(self._bytes_in_card_buffer))
+            response = bytes(self._read_data(self._bytes_in_card_buffer))
         self._send([0x17, 0x00])  # RF_OFF
         return response
 

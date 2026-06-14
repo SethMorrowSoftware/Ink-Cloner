@@ -49,13 +49,13 @@ class HelperTests(unittest.TestCase):
             def __init__(self):
                 self.frames = []
                 self.max_speed_hz = 0
-                self.reads = [
-                    [10, 0, 0, 0],  # RX_STATUS for inventory response length
-                    [0, 0, 0, 0],  # IRQ_STATUS
-                    [0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0],
-                    [1, 0, 0, 0],  # RX_STATUS for write response length
-                    [0, 0, 0, 0],  # IRQ_STATUS
-                    [0x00],
+                self.transfers = [
+                    [0, 0, 10, 0, 0, 0],  # RX_STATUS for inventory response length
+                    [0, 0, 0, 0, 0, 0],  # IRQ_STATUS
+                    [0x00, 0x00, 0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0],
+                    [0, 0, 1, 0, 0, 0],  # RX_STATUS for write response length
+                    [0, 0, 0, 0, 0, 0],  # IRQ_STATUS
+                    [0x00, 0x00, 0x00],
                 ]
 
             def open(self, bus, device):
@@ -64,9 +64,9 @@ class HelperTests(unittest.TestCase):
             def writebytes(self, frame):
                 self.frames.append(list(frame))
 
-            def readbytes(self, length):
-                data = self.reads.pop(0)
-                return data[:length]
+            def xfer2(self, frame):
+                data = self.transfers.pop(0)
+                return data[:len(frame)]
 
         class FakeSpidevModule:
             def __init__(self):
