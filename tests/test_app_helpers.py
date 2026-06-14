@@ -75,6 +75,14 @@ class HelperTests(unittest.TestCase):
 
         self.assertEqual(reader.device.frames[0], bytes([0x02, 0xB4, 0x00]) + app.TARGET_UID)
 
+    def test_describe_hardware_error_adds_i2c_guidance(self):
+        message = app.describe_hardware_error(ValueError('No I2C device at address: 0x24'))
+        self.assertIn('direct PN5180 SPI reader', message)
+        self.assertIn('pigpiod is running', message)
+
+    def test_backend_name_is_defined_for_routes_and_history(self):
+        self.assertEqual(app.NFC_READER_BACKEND, 'pn5180pi')
+
     def test_record_operation_caps_history(self):
         with patch.object(app, 'operation_history', []):
             for index in range(105):
