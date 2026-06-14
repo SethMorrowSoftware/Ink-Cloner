@@ -5,6 +5,7 @@ import importlib
 import importlib.util
 import json
 import os
+import pkgutil
 import time
 from datetime import datetime, timezone
 from threading import Lock
@@ -18,7 +19,10 @@ def _optional_module(name: str) -> Any:
         module_path.append(part)
         if importlib.util.find_spec('.'.join(module_path)) is None:
             return None
-    return importlib.import_module(name)
+    try:
+        return importlib.import_module(name)
+    except Exception:
+        return None
 
 
 flask_module = _optional_module('flask')
@@ -73,7 +77,34 @@ else:
     SocketIO = _MissingWebDependencySocketIO
 
 pn5180pi_module = _optional_module('pn5180pi')
-PN5180_CLASS = getattr(pn5180pi_module, 'Pn5180', None)
+spidev_module = _optional_module('spidev')
+gpio_module = _optional_module('RPi.GPIO')
+
+
+def resolve_pn5180_class(module: Any) -> Any:
+    """Find the PN5180 driver class across known pn5180pi export styles."""
+    if module is None:
+        return None
+    for class_name in ('Pn5180', 'PN5180'):
+        driver_class = getattr(module, class_name, None)
+        if driver_class is not None:
+            return driver_class
+    module_paths = getattr(module, '__path__', None)
+    if module_paths is None:
+        return None
+    for submodule in pkgutil.iter_modules(module_paths, f'{module.__name__}.'):
+        try:
+            imported_submodule = importlib.import_module(submodule.name)
+        except Exception:
+            continue
+        for class_name in ('Pn5180', 'PN5180'):
+            driver_class = getattr(imported_submodule, class_name, None)
+            if driver_class is not None:
+                return driver_class
+    return None
+
+
+PN5180_CLASS = resolve_pn5180_class(pn5180pi_module)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-me-in-production')
@@ -107,10 +138,13 @@ def env_int(name: str, default: int, *, minimum: int) -> int:
 TAG_DETECTION_TIMEOUT_SECONDS = env_float('TAG_DETECTION_TIMEOUT_SECONDS', 15.0, minimum=1.0)
 TAG_DETECTION_POLL_SECONDS = env_float('TAG_DETECTION_POLL_SECONDS', 0.2, minimum=0.05)
 ISO15693_BLOCK_SIZE = env_int('ISO15693_BLOCK_SIZE', 4, minimum=1)
+PN5180_RESPONSE_TIMEOUT_SECONDS = env_float('PN5180_RESPONSE_TIMEOUT_SECONDS', 0.25, minimum=0.01)
 PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
 ENABLE_UID_BACKDOOR = os.getenv('ENABLE_UID_BACKDOOR', 'false').lower() in {'1', 'true', 'yes', 'on'}
+PN5180_BACKEND = os.getenv('PN5180_BACKEND', 'pn5180pi').lower()
+NFC_READER_BACKEND = PN5180_BACKEND
 
 ISO15693_FLAG_DATA_RATE_HIGH = 0x02
 ISO15693_FLAG_INVENTORY = 0x04
@@ -252,25 +286,148 @@ def validate_uid(uid: bytes) -> bytes:
     return uid
 
 
+def first_callable(target: Any, *names: str) -> Any:
+    for name in names:
+        candidate = getattr(target, name, None)
+        if callable(candidate):
+            return candidate
+    return None
+
+
 def validate_iso15693_response(response: bytes) -> None:
     if response and response[0] & 0x01:
         error_code = response[1] if len(response) > 1 else 0
         raise RuntimeError(f'ISO 15693 tag returned error 0x{error_code:02X}')
 
 
+class DirectSpiPN5180Iso15693Reader:
+    """Direct PN5180 ISO 15693 reader using spidev and RPi.GPIO."""
+
+    label = 'PN5180 (direct SPI ISO 15693)'
+
+    def __init__(self) -> None:
+        if spidev_module is None or gpio_module is None:
+            raise RuntimeError('Install spidev and RPi.GPIO dependencies for direct PN5180 SPI access')
+        self._spi = spidev_module.SpiDev()
+        self._spi.open(0, 0 if PN5180_NSS_PIN == 8 else 1)
+        self._spi.max_speed_hz = env_int('PN5180_SPI_HZ', 50000, minimum=1000)
+        gpio_module.setmode(gpio_module.BCM)
+        gpio_module.setup(PN5180_BUSY_PIN, gpio_module.IN)
+        gpio_module.setup(PN5180_RESET_PIN, gpio_module.OUT, initial=gpio_module.HIGH)
+        self._hardware_reset()
+        self._bytes_in_card_buffer = 0
+
+    def _hardware_reset(self) -> None:
+        gpio_module.output(PN5180_RESET_PIN, gpio_module.LOW)
+        time.sleep(0.02)
+        gpio_module.output(PN5180_RESET_PIN, gpio_module.HIGH)
+        time.sleep(0.02)
+
+    def _wait_ready(self) -> None:
+        while gpio_module.input(PN5180_BUSY_PIN):
+            time.sleep(0.01)
+
+    def _send(self, frame: list[int]) -> None:
+        self._wait_ready()
+        self._spi.writebytes(frame)
+        self._wait_ready()
+
+    def _transfer(self, frame: list[int]) -> list[int]:
+        transfer = getattr(self._spi, 'xfer2', None) or getattr(self._spi, 'xfer3', None)
+        if not callable(transfer):
+            raise RuntimeError('spidev must expose xfer2() or xfer3() for PN5180 read transactions')
+        self._wait_ready()
+        response = transfer(frame)
+        self._wait_ready()
+        return response
+
+    def _read_register(self, register: int) -> list[int]:
+        response = self._transfer([0x04, register, 0x00, 0x00, 0x00, 0x00])
+        return response[2:6]
+
+    def _read_data(self, length: int) -> list[int]:
+        response = self._transfer([0x0A, 0x00] + ([0x00] * length))
+        return response[2:2 + length]
+
+    def _card_has_responded(self) -> bool:
+        deadline = time.monotonic() + PN5180_RESPONSE_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            rx_status = self._read_register(0x13)  # RX_STATUS
+            self._read_register(0x02)  # IRQ_STATUS
+            self._bytes_in_card_buffer = rx_status[0] if rx_status else 0
+            if self._bytes_in_card_buffer > 0:
+                return True
+            time.sleep(0.005)
+        return False
+
+    def _prepare_iso15693(self) -> None:
+        self._send([0x11, 0x0D, 0x8D])  # LOAD_RF_CONFIG: ISO 15693
+        self._send([0x16, 0x00])  # RF_ON
+        self._send([0x00, 0x03, 0xFF, 0xFF, 0x0F, 0x00])  # WRITE_REGISTER IRQ_CLEAR
+        self._send([0x02, 0x00, 0xF8, 0xFF, 0xFF, 0xFF])  # SYSTEM_CONFIG idle mask
+        self._send([0x01, 0x00, 0x03, 0x00, 0x00, 0x00])  # SYSTEM_CONFIG transceive
+
+    def exchange(self, frame: bytes) -> bytes:
+        self._prepare_iso15693()
+        self._send([0x09, 0x00] + list(frame))  # SEND_DATA, complete bytes
+        response = b''
+        if self._card_has_responded():
+            response = bytes(self._read_data(self._bytes_in_card_buffer))
+        self._send([0x17, 0x00])  # RF_OFF
+        return response
+
+    def poll_uid(self) -> Optional[bytes]:
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
+            ISO15693_CMD_INVENTORY,
+            0x00,
+        ])
+        return parse_iso15693_inventory_response(self.exchange(frame))
+
+    def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
+        uid = validate_uid(uid)
+        data = validate_block_data(data)
+        if not 0 <= block_index <= 0xFF:
+            raise ValueError(f'ISO 15693 block index out of range: {block_index}')
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_WRITE_SINGLE_BLOCK,
+        ]) + uid[::-1] + bytes([block_index]) + data
+        validate_iso15693_response(self.exchange(frame))
+
+    def write_uid_backdoor(self, uid: bytes) -> None:
+        uid = validate_uid(uid)
+        frame = bytes([ISO15693_FLAG_DATA_RATE_HIGH, ISO15693_CMD_WRITE_UID_BACKDOOR, 0x00]) + uid
+        validate_iso15693_response(self.exchange(frame))
+
+
 class PN5180Iso15693Reader:
-    """Direct PN5180 ISO 15693 reader using pn5180pi.Pn5180 raw send/receive."""
+    """Direct PN5180 ISO 15693 reader using a pn5180pi raw send/receive driver."""
 
     label = 'PN5180 (pn5180pi raw ISO 15693)'
 
     def __init__(self) -> None:
         if PN5180_CLASS is None:
-            raise RuntimeError('Install pn5180pi and confirm it exports pn5180pi.Pn5180')
+            raise RuntimeError('Install pn5180pi and confirm it exports a Pn5180 or PN5180 driver class')
         self.device = PN5180_CLASS(PN5180_NSS_PIN, PN5180_BUSY_PIN, PN5180_RESET_PIN)
+        self._inventory_iso15693 = first_callable(
+            self.device,
+            'inventory_iso15693',
+            'inventoryIso15693',
+            'inventory_iso_15693',
+            'inventory',
+        )
+        self._write_block_iso15693 = first_callable(
+            self.device,
+            'write_single_block_iso15693',
+            'writeSingleBlockIso15693',
+            'write_block_iso15693',
+            'writeBlockIso15693',
+        )
         self._send_data = getattr(self.device, 'send_data', None) or getattr(self.device, 'sendData', None)
         self._receive_data = getattr(self.device, 'receive_data', None) or getattr(self.device, 'receiveData', None)
-        if not callable(self._send_data) or not callable(self._receive_data):
-            raise RuntimeError('pn5180pi.Pn5180 must expose send_data(frame) and receive_data()')
+        if not callable(self._inventory_iso15693) and (not callable(self._send_data) or not callable(self._receive_data)):
+            raise RuntimeError('pn5180pi driver must expose inventory_iso15693() or send_data(frame) and receive_data()')
 
     def exchange(self, frame: bytes) -> bytes:
         self._send_data(bytes(frame))
@@ -278,6 +435,11 @@ class PN5180Iso15693Reader:
         return bytes(response or b'')
 
     def poll_uid(self) -> Optional[bytes]:
+        if callable(self._inventory_iso15693):
+            response = self._inventory_iso15693()
+            if isinstance(response, (list, tuple)) and response:
+                response = response[0]
+            return parse_iso15693_uid(response)
         frame = bytes([
             ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
             ISO15693_CMD_INVENTORY,
@@ -290,6 +452,9 @@ class PN5180Iso15693Reader:
         data = validate_block_data(data)
         if not 0 <= block_index <= 0xFF:
             raise ValueError(f'ISO 15693 block index out of range: {block_index}')
+        if callable(self._write_block_iso15693):
+            self._write_block_iso15693(uid, block_index, data)
+            return
         frame = bytes([
             ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
             ISO15693_CMD_WRITE_SINGLE_BLOCK,
@@ -314,24 +479,46 @@ def update_ui_status() -> None:
     socketio.emit('hw_status_update', {'status': hardware_status})
 
 
-def record_operation(name: str, status: str, **details: Any) -> None:
+def record_operation(name: str, operation_status: str, **details: Any) -> None:
     operation_history.append({
         'timestamp': utc_now_iso(),
         'operation': name,
-        'status': status,
+        'status': operation_status,
         'details': details,
     })
     del operation_history[:-100]
 
 
+def describe_hardware_error(exc: Exception) -> str:
+    """Return an operator-friendly PN5180 initialization error."""
+    message = str(exc)
+    if 'No I2C device at address' in message:
+        return (
+            f'{message}. This app uses a direct PN5180 SPI reader, not an I2C reader at 0x24; '
+            'confirm the installed pn5180pi package is selected, SPI is enabled, pigpiod is running, '
+            'and the PN5180 NSS/BUSY/RESET/MOSI/MISO/SCK pins match the README wiring.'
+        )
+    if 'Install spidev' in message or 'Install pn5180pi' in message:
+        return (
+            f'{message}. Install dependencies with install.sh or run '
+            'pip install -r requirements.txt in the application virtual environment.'
+        )
+    return message
+
+
 def initialize_hardware() -> None:
     global reader, hardware_status
     try:
-        reader = PN5180Iso15693Reader()
+        if PN5180_BACKEND == 'pn5180pi':
+            reader = PN5180Iso15693Reader()
+        elif PN5180_BACKEND == 'auto' and PN5180_CLASS is not None and (spidev_module is None or gpio_module is None):
+            reader = PN5180Iso15693Reader()
+        else:
+            reader = DirectSpiPN5180Iso15693Reader()
         hardware_status = f'Connected: {reader.label}'
     except Exception as exc:
         reader = None
-        hardware_status = f'Error: {exc}'
+        hardware_status = f'Error: {describe_hardware_error(exc)}'
 
 
 def ensure_reader() -> bool:
@@ -381,7 +568,7 @@ def run_reconnect() -> None:
         emit_action_complete('success')
     else:
         log_to_web(f'❌ Reconnect failed: {hardware_status}')
-        record_operation('reconnect_reader', 'fail', status=hardware_status, backend=NFC_READER_BACKEND)
+        record_operation('reconnect_reader', 'fail', hardware_status=hardware_status, backend=NFC_READER_BACKEND)
         emit_action_complete('fail')
 
 
