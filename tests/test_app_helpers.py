@@ -97,6 +97,9 @@ class HelperTests(unittest.TestCase):
             def __init__(self, _nss, _busy, _reset):
                 self.writes = []
 
+            def setup_iso15693(self):
+                self.prepared = getattr(self, 'prepared', 0) + 1
+
             def inventory_iso15693(self):
                 return bytes([0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0])
 
@@ -109,6 +112,7 @@ class HelperTests(unittest.TestCase):
             reader.write_block(uid, 5, bytes([1, 2, 3, 4]))
 
         self.assertEqual(uid, bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
+        self.assertEqual(reader.device.prepared, 1)
         self.assertEqual(reader.device.writes, [(uid, 5, bytes([1, 2, 3, 4]))])
 
     def test_pn5180_reader_uses_raw_iso15693_frames(self):
@@ -159,6 +163,24 @@ class HelperTests(unittest.TestCase):
             reader.write_uid_backdoor(app.TARGET_UID)
 
         self.assertEqual(reader.device.frames[0], bytes([0x02, 0xB4, 0x00]) + app.TARGET_UID)
+
+
+    def test_reset_pn5180_hardware_pulses_configured_reset_pin(self):
+        calls = []
+        fake_gpio = SimpleNamespace(
+            BCM='BCM',
+            OUT='OUT',
+            HIGH=1,
+            LOW=0,
+            setmode=lambda mode: calls.append(('setmode', mode)),
+            setup=lambda *args, **kwargs: calls.append(('setup', args, kwargs)),
+            output=lambda *args: calls.append(('output', args)),
+        )
+        with patch.object(app, 'gpio_module', fake_gpio):
+            app.reset_pn5180_hardware()
+
+        self.assertIn(('output', (app.PN5180_RESET_PIN, fake_gpio.LOW)), calls)
+        self.assertIn(('output', (app.PN5180_RESET_PIN, fake_gpio.HIGH)), calls)
 
     def test_describe_hardware_error_adds_i2c_guidance(self):
         message = app.describe_hardware_error(ValueError('No I2C device at address: 0x24'))

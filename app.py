@@ -442,7 +442,12 @@ class PN5180Iso15693Reader:
             'setup_iso15693',
             'configure_iso15693',
             'begin_iso15693',
+            'load_rf_config_iso15693',
             'rf_on_iso15693',
+            'rf_on',
+            'enable_rf',
+            'enable_rf_field',
+            'turn_rf_on',
         )
         self._send_data = getattr(self.device, 'send_data', None) or getattr(self.device, 'sendData', None)
         self._receive_data = getattr(self.device, 'receive_data', None) or getattr(self.device, 'receiveData', None)
@@ -458,6 +463,8 @@ class PN5180Iso15693Reader:
 
     def poll_uid(self) -> Optional[bytes]:
         if callable(self._inventory_iso15693):
+            if callable(self._prepare_iso15693):
+                self._prepare_iso15693()
             response = self._inventory_iso15693()
             if isinstance(response, (list, tuple)) and response:
                 response = response[0]
@@ -511,6 +518,18 @@ def record_operation(name: str, operation_status: str, **details: Any) -> None:
     del operation_history[:-100]
 
 
+def reset_pn5180_hardware() -> None:
+    """Pulse the PN5180 reset pin before constructing a backend driver."""
+    if gpio_module is None:
+        return
+    gpio_module.setmode(gpio_module.BCM)
+    gpio_module.setup(PN5180_RESET_PIN, gpio_module.OUT, initial=gpio_module.HIGH)
+    gpio_module.output(PN5180_RESET_PIN, gpio_module.LOW)
+    time.sleep(0.1)
+    gpio_module.output(PN5180_RESET_PIN, gpio_module.HIGH)
+    time.sleep(0.1)
+
+
 def describe_hardware_error(exc: Exception) -> str:
     """Return an operator-friendly PN5180 initialization error."""
     message = str(exc)
@@ -531,6 +550,7 @@ def describe_hardware_error(exc: Exception) -> str:
 def initialize_hardware() -> None:
     global reader, hardware_status
     try:
+        reset_pn5180_hardware()
         if PN5180_BACKEND == 'pn5180pi':
             reader = PN5180Iso15693Reader()
         elif PN5180_BACKEND == 'auto' and PN5180_CLASS is not None and (spidev_module is None or gpio_module is None):

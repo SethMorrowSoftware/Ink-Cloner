@@ -139,12 +139,12 @@ cat /etc/default/ink-cloner
 
 if command -v pinctrl >/dev/null 2>&1; then
   printf '\nPin state snapshot:\n'
-  for pin in 8 23 10 9 11 24; do
+  for pin in 8 23 25 10 9 11 24; do
     pinctrl get "$pin" || true
   done
 elif command -v raspi-gpio >/dev/null 2>&1; then
   printf '\nPin state snapshot:\n'
-  for pin in 8 23 10 9 11 24; do
+  for pin in 8 23 25 10 9 11 24; do
     raspi-gpio get "$pin" || true
   done
 fi
