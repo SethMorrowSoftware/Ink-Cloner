@@ -111,6 +111,7 @@ PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
 ENABLE_UID_BACKDOOR = os.getenv('ENABLE_UID_BACKDOOR', 'false').lower() in {'1', 'true', 'yes', 'on'}
+NFC_READER_BACKEND = 'pn5180pi'
 
 ISO15693_FLAG_DATA_RATE_HIGH = 0x02
 ISO15693_FLAG_INVENTORY = 0x04
@@ -314,14 +315,26 @@ def update_ui_status() -> None:
     socketio.emit('hw_status_update', {'status': hardware_status})
 
 
-def record_operation(name: str, status: str, **details: Any) -> None:
+def record_operation(name: str, operation_status: str, **details: Any) -> None:
     operation_history.append({
         'timestamp': utc_now_iso(),
         'operation': name,
-        'status': status,
+        'status': operation_status,
         'details': details,
     })
     del operation_history[:-100]
+
+
+def describe_hardware_error(exc: Exception) -> str:
+    """Return an operator-friendly PN5180 initialization error."""
+    message = str(exc)
+    if 'No I2C device at address' in message:
+        return (
+            f'{message}. This app uses a direct PN5180 SPI reader, not an I2C reader at 0x24; '
+            'confirm the installed pn5180pi package is selected, SPI is enabled, pigpiod is running, '
+            'and the PN5180 NSS/BUSY/RESET/MOSI/MISO/SCK pins match the README wiring.'
+        )
+    return message
 
 
 def initialize_hardware() -> None:
@@ -331,7 +344,7 @@ def initialize_hardware() -> None:
         hardware_status = f'Connected: {reader.label}'
     except Exception as exc:
         reader = None
-        hardware_status = f'Error: {exc}'
+        hardware_status = f'Error: {describe_hardware_error(exc)}'
 
 
 def ensure_reader() -> bool:
@@ -381,7 +394,7 @@ def run_reconnect() -> None:
         emit_action_complete('success')
     else:
         log_to_web(f'❌ Reconnect failed: {hardware_status}')
-        record_operation('reconnect_reader', 'fail', status=hardware_status, backend=NFC_READER_BACKEND)
+        record_operation('reconnect_reader', 'fail', hardware_status=hardware_status, backend=NFC_READER_BACKEND)
         emit_action_complete('fail')
 
 
