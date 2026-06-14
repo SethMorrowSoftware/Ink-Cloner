@@ -12,7 +12,7 @@ Professional Flask + Socket.IO **PN5180** console with **ink cloning as the prim
 
 ## PN5180 setup
 
-The app defaults to its built-in direct SPI PN5180 transport using `spidev` and `RPi.GPIO`, then sends raw ISO 15693 / NFC-V frames for inventory and write-single-block operations. You can opt into the `pn5180pi` wrapper with `PN5180_BACKEND=pn5180pi` when you have verified that library configures ISO 15693 RF correctly on your board.
+The app defaults to the `pn5180pi` wrapper backend so the library controls PN5180 SPI timing and ISO 15693 RF setup. You can opt into the built-in direct SPI transport with `PN5180_BACKEND=direct-spi` for low-level debugging.
 
 Use this when the PN5180 module is wired directly to the Pi SPI bus plus NSS, BUSY, and RESET GPIO lines.
 
@@ -86,7 +86,7 @@ The web UI can still start on a development machine without PN5180 libraries ins
 - `SECRET_KEY` (default `change-me-in-production`)
 - `CORS_ALLOWED_ORIGINS` (default `*`)
 - `PORT` (default `5000`)
-- `PN5180_BACKEND` (default `direct-spi`; use `pn5180pi` only when you explicitly want the pn5180pi wrapper, or `auto` to prefer pn5180pi only if direct SPI dependencies are unavailable)
+- `PN5180_BACKEND` (default `pn5180pi`; use `direct-spi` only for low-level debugging, or `auto` to use pn5180pi only if direct SPI dependencies are unavailable)
 - `PN5180_NSS_PIN` (default `8`, BCM numbering for direct PN5180 boards)
 - `PN5180_BUSY_PIN` (default `24`, BCM numbering for direct PN5180 boards)
 - `PN5180_RESET_PIN` (default `23`, BCM numbering for direct PN5180 boards)

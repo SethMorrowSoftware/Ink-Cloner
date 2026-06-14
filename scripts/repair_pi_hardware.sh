@@ -79,12 +79,20 @@ TAG_DETECTION_POLL_SECONDS=0.2
 PN5180_NSS_PIN=8
 PN5180_BUSY_PIN=24
 PN5180_RESET_PIN=23
-PN5180_BACKEND=direct-spi
+PN5180_BACKEND=pn5180pi
 PN5180_RESPONSE_TIMEOUT_SECONDS=0.25
 ISO15693_BLOCK_SIZE=4
 ENABLE_UID_BACKDOOR=false
 ENVEOF
   chmod 640 /etc/default/ink-cloner
+fi
+
+
+info "Ensuring service backend defaults to pn5180pi"
+if grep -q '^PN5180_BACKEND=' /etc/default/ink-cloner; then
+  sed -i 's/^PN5180_BACKEND=.*/PN5180_BACKEND=pn5180pi/' /etc/default/ink-cloner
+else
+  echo 'PN5180_BACKEND=pn5180pi' >> /etc/default/ink-cloner
 fi
 
 if [[ ! -f /etc/systemd/system/$SERVICE_NAME ]]; then

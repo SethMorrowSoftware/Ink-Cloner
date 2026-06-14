@@ -143,7 +143,7 @@ PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
 ENABLE_UID_BACKDOOR = os.getenv('ENABLE_UID_BACKDOOR', 'false').lower() in {'1', 'true', 'yes', 'on'}
-PN5180_BACKEND = os.getenv('PN5180_BACKEND', 'direct-spi').lower()
+PN5180_BACKEND = os.getenv('PN5180_BACKEND', 'pn5180pi').lower()
 NFC_READER_BACKEND = PN5180_BACKEND
 
 ISO15693_FLAG_DATA_RATE_HIGH = 0x02
@@ -311,7 +311,10 @@ class DirectSpiPN5180Iso15693Reader:
         self._spi = spidev_module.SpiDev()
         self._spi.open(0, 0 if PN5180_NSS_PIN == 8 else 1)
         self._spi.max_speed_hz = env_int('PN5180_SPI_HZ', 50000, minimum=1000)
+        if hasattr(self._spi, 'no_cs'):
+            self._spi.no_cs = True
         gpio_module.setmode(gpio_module.BCM)
+        gpio_module.setup(PN5180_NSS_PIN, gpio_module.OUT, initial=gpio_module.HIGH)
         gpio_module.setup(PN5180_BUSY_PIN, gpio_module.IN)
         gpio_module.setup(PN5180_RESET_PIN, gpio_module.OUT, initial=gpio_module.HIGH)
         self._hardware_reset()
@@ -327,27 +330,36 @@ class DirectSpiPN5180Iso15693Reader:
         while gpio_module.input(PN5180_BUSY_PIN):
             time.sleep(0.01)
 
+    def _select(self) -> None:
+        gpio_module.output(PN5180_NSS_PIN, gpio_module.LOW)
+
+    def _deselect(self) -> None:
+        gpio_module.output(PN5180_NSS_PIN, gpio_module.HIGH)
+
     def _send(self, frame: list[int]) -> None:
         self._wait_ready()
-        self._spi.writebytes(frame)
+        self._select()
+        try:
+            self._spi.writebytes(frame)
+        finally:
+            self._deselect()
         self._wait_ready()
 
-    def _transfer(self, frame: list[int]) -> list[int]:
-        transfer = getattr(self._spi, 'xfer2', None) or getattr(self._spi, 'xfer3', None)
-        if not callable(transfer):
-            raise RuntimeError('spidev must expose xfer2() or xfer3() for PN5180 read transactions')
+    def _read_after_command(self, command: list[int], length: int) -> list[int]:
         self._wait_ready()
-        response = transfer(frame)
-        self._wait_ready()
-        return response
+        self._select()
+        try:
+            self._spi.writebytes(command)
+            self._wait_ready()
+            return self._spi.readbytes(length)
+        finally:
+            self._deselect()
 
     def _read_register(self, register: int) -> list[int]:
-        response = self._transfer([0x04, register, 0x00, 0x00, 0x00, 0x00])
-        return response[2:6]
+        return self._read_after_command([0x04, register], 4)
 
     def _read_data(self, length: int) -> list[int]:
-        response = self._transfer([0x0A, 0x00] + ([0x00] * length))
-        return response[2:2 + length]
+        return self._read_after_command([0x0A], length)
 
     def _card_has_responded(self) -> bool:
         deadline = time.monotonic() + PN5180_RESPONSE_TIMEOUT_SECONDS
@@ -424,12 +436,22 @@ class PN5180Iso15693Reader:
             'write_block_iso15693',
             'writeBlockIso15693',
         )
+        self._prepare_iso15693 = first_callable(
+            self.device,
+            'prepare_iso15693',
+            'setup_iso15693',
+            'configure_iso15693',
+            'begin_iso15693',
+            'rf_on_iso15693',
+        )
         self._send_data = getattr(self.device, 'send_data', None) or getattr(self.device, 'sendData', None)
         self._receive_data = getattr(self.device, 'receive_data', None) or getattr(self.device, 'receiveData', None)
         if not callable(self._inventory_iso15693) and (not callable(self._send_data) or not callable(self._receive_data)):
             raise RuntimeError('pn5180pi driver must expose inventory_iso15693() or send_data(frame) and receive_data()')
 
     def exchange(self, frame: bytes) -> bytes:
+        if callable(self._prepare_iso15693):
+            self._prepare_iso15693()
         self._send_data(bytes(frame))
         response = self._receive_data()
         return bytes(response or b'')

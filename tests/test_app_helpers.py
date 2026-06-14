@@ -49,13 +49,14 @@ class HelperTests(unittest.TestCase):
             def __init__(self):
                 self.frames = []
                 self.max_speed_hz = 0
-                self.transfers = [
-                    [0, 0, 10, 0, 0, 0],  # RX_STATUS for inventory response length
-                    [0, 0, 0, 0, 0, 0],  # IRQ_STATUS
-                    [0x00, 0x00, 0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0],
-                    [0, 0, 1, 0, 0, 0],  # RX_STATUS for write response length
-                    [0, 0, 0, 0, 0, 0],  # IRQ_STATUS
-                    [0x00, 0x00, 0x00],
+                self.no_cs = False
+                self.reads = [
+                    [10, 0, 0, 0],  # RX_STATUS for inventory response length
+                    [0, 0, 0, 0],  # IRQ_STATUS
+                    [0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0],
+                    [1, 0, 0, 0],  # RX_STATUS for write response length
+                    [0, 0, 0, 0],  # IRQ_STATUS
+                    [0x00],
                 ]
 
             def open(self, bus, device):
@@ -64,9 +65,9 @@ class HelperTests(unittest.TestCase):
             def writebytes(self, frame):
                 self.frames.append(list(frame))
 
-            def xfer2(self, frame):
-                data = self.transfers.pop(0)
-                return data[:len(frame)]
+            def readbytes(self, length):
+                data = self.reads.pop(0)
+                return data[:length]
 
         class FakeSpidevModule:
             def __init__(self):
@@ -115,6 +116,10 @@ class HelperTests(unittest.TestCase):
             def __init__(self, nss, busy, reset):
                 self.pins = (nss, busy, reset)
                 self.frames = []
+                self.prepared = 0
+
+            def setup_iso15693(self):
+                self.prepared += 1
 
             def send_data(self, frame):
                 self.frames.append(bytes(frame))
@@ -130,6 +135,7 @@ class HelperTests(unittest.TestCase):
             reader.write_block(uid, 5, bytes([1, 2, 3, 4]))
 
         self.assertEqual(reader.device.pins, (app.PN5180_NSS_PIN, app.PN5180_BUSY_PIN, app.PN5180_RESET_PIN))
+        self.assertEqual(reader.device.prepared, 2)
         self.assertEqual(reader.device.frames[0], bytes([0x06, 0x01, 0x00]))
         self.assertEqual(reader.device.frames[1], bytes([0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04]))
 
@@ -137,6 +143,10 @@ class HelperTests(unittest.TestCase):
         class FakePn5180:
             def __init__(self, _nss, _busy, _reset):
                 self.frames = []
+                self.prepared = 0
+
+            def setup_iso15693(self):
+                self.prepared += 1
 
             def send_data(self, frame):
                 self.frames.append(bytes(frame))
@@ -156,10 +166,10 @@ class HelperTests(unittest.TestCase):
         self.assertIn('pigpiod is running', message)
 
     def test_backend_name_is_defined_for_routes_and_history(self):
-        self.assertEqual(app.NFC_READER_BACKEND, 'direct-spi')
+        self.assertEqual(app.NFC_READER_BACKEND, 'pn5180pi')
 
 
-    def test_initialize_hardware_prefers_direct_spi_backend_by_default(self):
+    def test_initialize_hardware_uses_direct_spi_when_configured(self):
         class FakeDirectReader:
             label = 'fake direct'
 
