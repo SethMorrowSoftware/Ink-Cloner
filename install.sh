@@ -15,7 +15,7 @@ fi
 
 echo "==> Installing system dependencies"
 apt-get update
-apt-get install -y python3 python3-venv python3-pip git pigpio python3-pigpio
+apt-get install -y python3 python3-venv python3-pip python3-dev git pigpio python3-pigpio python3-spidev python3-rpi.gpio build-essential rsync
 
 echo "==> Enabling SPI interface"
 if command -v raspi-config >/dev/null 2>&1; then

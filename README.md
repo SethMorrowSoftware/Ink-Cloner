@@ -58,6 +58,18 @@ sudo raspi-config nonint get_spi
 
 Then confirm the PN5180 is wired to SPI0 (MOSI GPIO 10, MISO GPIO 9, SCK GPIO 11, CE0/NSS GPIO 8 by default), both 3.3V logic and 5V RF power are connected, and `/etc/default/ink-cloner` uses the correct `PN5180_NSS_PIN`, `PN5180_BUSY_PIN`, and `PN5180_RESET_PIN` values for your board.
 
+## Raspberry Pi hardware repair helper
+
+If the service still reports missing PN5180/SPI dependencies after installation, run the repair script from the repo checkout on the Pi:
+
+```bash
+cd ~/Ink-Cloner
+git pull
+sudo bash scripts/repair_pi_hardware.sh
+```
+
+The script installs SPI/GPIO system packages, refreshes `/opt/ink-cloner`, installs the Python requirements into the service virtual environment, verifies `spidev`/`RPi.GPIO` imports, prints SPI/GPIO diagnostics, restarts the service, and shows recent logs.
+
 ## Quick start
 ```bash
 python3 -m venv .venv
