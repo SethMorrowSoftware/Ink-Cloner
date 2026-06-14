@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -34,6 +35,13 @@ class HelperTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             app.validate_iso15693_response(bytes([0x01, 0x0F]))
 
+
+    def test_resolve_pn5180_class_accepts_uppercase_export(self):
+        class FakePN5180:
+            pass
+
+        module = SimpleNamespace(PN5180=FakePN5180)
+        self.assertIs(app.resolve_pn5180_class(module), FakePN5180)
 
     def test_pn5180_reader_uses_raw_iso15693_frames(self):
         class FakePn5180:
@@ -74,6 +82,30 @@ class HelperTests(unittest.TestCase):
             reader.write_uid_backdoor(app.TARGET_UID)
 
         self.assertEqual(reader.device.frames[0], bytes([0x02, 0xB4, 0x00]) + app.TARGET_UID)
+
+    def test_describe_hardware_error_adds_i2c_guidance(self):
+        message = app.describe_hardware_error(ValueError('No I2C device at address: 0x24'))
+        self.assertIn('direct PN5180 SPI reader', message)
+        self.assertIn('pigpiod is running', message)
+
+    def test_backend_name_is_defined_for_routes_and_history(self):
+        self.assertEqual(app.NFC_READER_BACKEND, 'pn5180pi')
+
+    def test_record_operation_allows_detail_named_status(self):
+        with patch.object(app, 'operation_history', []):
+            app.record_operation('reconnect_reader', 'fail', status='Error: offline')
+            self.assertEqual(app.operation_history[0]['status'], 'fail')
+            self.assertEqual(app.operation_history[0]['details']['status'], 'Error: offline')
+
+    def test_run_reconnect_failure_records_hardware_status(self):
+        with (
+            patch.object(app, 'PN5180_CLASS', None),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_reconnect()
+            self.assertEqual(app.operation_history[-1]['operation'], 'reconnect_reader')
+            self.assertEqual(app.operation_history[-1]['status'], 'fail')
+            self.assertIn('hardware_status', app.operation_history[-1]['details'])
 
     def test_record_operation_caps_history(self):
         with patch.object(app, 'operation_history', []):

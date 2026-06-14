@@ -5,6 +5,7 @@ import importlib
 import importlib.util
 import json
 import os
+import pkgutil
 import time
 from datetime import datetime, timezone
 from threading import Lock
@@ -73,7 +74,32 @@ else:
     SocketIO = _MissingWebDependencySocketIO
 
 pn5180pi_module = _optional_module('pn5180pi')
-PN5180_CLASS = getattr(pn5180pi_module, 'Pn5180', None)
+
+
+def resolve_pn5180_class(module: Any) -> Any:
+    """Find the PN5180 driver class across known pn5180pi export styles."""
+    if module is None:
+        return None
+    for class_name in ('Pn5180', 'PN5180'):
+        driver_class = getattr(module, class_name, None)
+        if driver_class is not None:
+            return driver_class
+    module_paths = getattr(module, '__path__', None)
+    if module_paths is None:
+        return None
+    for submodule in pkgutil.iter_modules(module_paths, f'{module.__name__}.'):
+        try:
+            imported_submodule = importlib.import_module(submodule.name)
+        except Exception:
+            continue
+        for class_name in ('Pn5180', 'PN5180'):
+            driver_class = getattr(imported_submodule, class_name, None)
+            if driver_class is not None:
+                return driver_class
+    return None
+
+
+PN5180_CLASS = resolve_pn5180_class(pn5180pi_module)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-me-in-production')
@@ -111,6 +137,7 @@ PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
 ENABLE_UID_BACKDOOR = os.getenv('ENABLE_UID_BACKDOOR', 'false').lower() in {'1', 'true', 'yes', 'on'}
+NFC_READER_BACKEND = 'pn5180pi'
 
 ISO15693_FLAG_DATA_RATE_HIGH = 0x02
 ISO15693_FLAG_INVENTORY = 0x04
@@ -259,18 +286,18 @@ def validate_iso15693_response(response: bytes) -> None:
 
 
 class PN5180Iso15693Reader:
-    """Direct PN5180 ISO 15693 reader using pn5180pi.Pn5180 raw send/receive."""
+    """Direct PN5180 ISO 15693 reader using a pn5180pi raw send/receive driver."""
 
     label = 'PN5180 (pn5180pi raw ISO 15693)'
 
     def __init__(self) -> None:
         if PN5180_CLASS is None:
-            raise RuntimeError('Install pn5180pi and confirm it exports pn5180pi.Pn5180')
+            raise RuntimeError('Install pn5180pi and confirm it exports a Pn5180 or PN5180 driver class')
         self.device = PN5180_CLASS(PN5180_NSS_PIN, PN5180_BUSY_PIN, PN5180_RESET_PIN)
         self._send_data = getattr(self.device, 'send_data', None) or getattr(self.device, 'sendData', None)
         self._receive_data = getattr(self.device, 'receive_data', None) or getattr(self.device, 'receiveData', None)
         if not callable(self._send_data) or not callable(self._receive_data):
-            raise RuntimeError('pn5180pi.Pn5180 must expose send_data(frame) and receive_data()')
+            raise RuntimeError('pn5180pi driver must expose send_data(frame) and receive_data()')
 
     def exchange(self, frame: bytes) -> bytes:
         self._send_data(bytes(frame))
@@ -314,14 +341,26 @@ def update_ui_status() -> None:
     socketio.emit('hw_status_update', {'status': hardware_status})
 
 
-def record_operation(name: str, status: str, **details: Any) -> None:
+def record_operation(name: str, operation_status: str, **details: Any) -> None:
     operation_history.append({
         'timestamp': utc_now_iso(),
         'operation': name,
-        'status': status,
+        'status': operation_status,
         'details': details,
     })
     del operation_history[:-100]
+
+
+def describe_hardware_error(exc: Exception) -> str:
+    """Return an operator-friendly PN5180 initialization error."""
+    message = str(exc)
+    if 'No I2C device at address' in message:
+        return (
+            f'{message}. This app uses a direct PN5180 SPI reader, not an I2C reader at 0x24; '
+            'confirm the installed pn5180pi package is selected, SPI is enabled, pigpiod is running, '
+            'and the PN5180 NSS/BUSY/RESET/MOSI/MISO/SCK pins match the README wiring.'
+        )
+    return message
 
 
 def initialize_hardware() -> None:
@@ -331,7 +370,7 @@ def initialize_hardware() -> None:
         hardware_status = f'Connected: {reader.label}'
     except Exception as exc:
         reader = None
-        hardware_status = f'Error: {exc}'
+        hardware_status = f'Error: {describe_hardware_error(exc)}'
 
 
 def ensure_reader() -> bool:
@@ -381,7 +420,7 @@ def run_reconnect() -> None:
         emit_action_complete('success')
     else:
         log_to_web(f'❌ Reconnect failed: {hardware_status}')
-        record_operation('reconnect_reader', 'fail', status=hardware_status, backend=NFC_READER_BACKEND)
+        record_operation('reconnect_reader', 'fail', hardware_status=hardware_status, backend=NFC_READER_BACKEND)
         emit_action_complete('fail')
 
 
