@@ -83,6 +83,22 @@ class HelperTests(unittest.TestCase):
     def test_backend_name_is_defined_for_routes_and_history(self):
         self.assertEqual(app.NFC_READER_BACKEND, 'pn5180pi')
 
+    def test_record_operation_allows_detail_named_status(self):
+        with patch.object(app, 'operation_history', []):
+            app.record_operation('reconnect_reader', 'fail', status='Error: offline')
+            self.assertEqual(app.operation_history[0]['status'], 'fail')
+            self.assertEqual(app.operation_history[0]['details']['status'], 'Error: offline')
+
+    def test_run_reconnect_failure_records_hardware_status(self):
+        with (
+            patch.object(app, 'PN5180_CLASS', None),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_reconnect()
+            self.assertEqual(app.operation_history[-1]['operation'], 'reconnect_reader')
+            self.assertEqual(app.operation_history[-1]['status'], 'fail')
+            self.assertIn('hardware_status', app.operation_history[-1]['details'])
+
     def test_record_operation_caps_history(self):
         with patch.object(app, 'operation_history', []):
             for index in range(105):

@@ -315,11 +315,11 @@ def update_ui_status() -> None:
     socketio.emit('hw_status_update', {'status': hardware_status})
 
 
-def record_operation(name: str, status: str, **details: Any) -> None:
+def record_operation(name: str, operation_status: str, **details: Any) -> None:
     operation_history.append({
         'timestamp': utc_now_iso(),
         'operation': name,
-        'status': status,
+        'status': operation_status,
         'details': details,
     })
     del operation_history[:-100]
@@ -394,7 +394,7 @@ def run_reconnect() -> None:
         emit_action_complete('success')
     else:
         log_to_web(f'❌ Reconnect failed: {hardware_status}')
-        record_operation('reconnect_reader', 'fail', status=hardware_status, backend=NFC_READER_BACKEND)
+        record_operation('reconnect_reader', 'fail', hardware_status=hardware_status, backend=NFC_READER_BACKEND)
         emit_action_complete('fail')
 
 
