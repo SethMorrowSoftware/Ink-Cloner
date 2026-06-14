@@ -89,6 +89,7 @@ The web UI can still start on a development machine without PN5180 libraries ins
 - `PN5180_NSS_PIN` (default `8`, BCM numbering for direct PN5180 boards)
 - `PN5180_BUSY_PIN` (default `24`, BCM numbering for direct PN5180 boards)
 - `PN5180_RESET_PIN` (default `23`, BCM numbering for direct PN5180 boards)
+- `PN5180_RESPONSE_TIMEOUT_SECONDS` (default `0.25`, minimum `0.01`, direct SPI response wait time)
 - `TAG_DETECTION_TIMEOUT_SECONDS` (default `15`, minimum `1`)
 - `TAG_DETECTION_POLL_SECONDS` (default `0.2`, minimum `0.05`)
 - `ISO15693_BLOCK_SIZE` (default `4`, minimum `1`)

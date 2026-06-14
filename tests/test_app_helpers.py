@@ -76,7 +76,7 @@ class HelperTests(unittest.TestCase):
                 return self.spi
 
         fake_spidev = FakeSpidevModule()
-        fake_gpio = SimpleNamespace(BCM='BCM', IN='IN', setmode=lambda _mode: None, setup=lambda *_args: None, input=lambda _pin: 0)
+        fake_gpio = SimpleNamespace(BCM='BCM', IN='IN', OUT='OUT', HIGH=1, LOW=0, setmode=lambda _mode: None, setup=lambda *_args, **_kwargs: None, output=lambda *_args: None, input=lambda _pin: 0)
 
         with (
             patch.object(app, 'spidev_module', fake_spidev),

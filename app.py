@@ -135,6 +135,7 @@ def env_int(name: str, default: int, *, minimum: int) -> int:
 TAG_DETECTION_TIMEOUT_SECONDS = env_float('TAG_DETECTION_TIMEOUT_SECONDS', 15.0, minimum=1.0)
 TAG_DETECTION_POLL_SECONDS = env_float('TAG_DETECTION_POLL_SECONDS', 0.2, minimum=0.05)
 ISO15693_BLOCK_SIZE = env_int('ISO15693_BLOCK_SIZE', 4, minimum=1)
+PN5180_RESPONSE_TIMEOUT_SECONDS = env_float('PN5180_RESPONSE_TIMEOUT_SECONDS', 0.25, minimum=0.01)
 PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
@@ -300,7 +301,15 @@ class DirectSpiPN5180Iso15693Reader:
         self._spi.max_speed_hz = env_int('PN5180_SPI_HZ', 50000, minimum=1000)
         gpio_module.setmode(gpio_module.BCM)
         gpio_module.setup(PN5180_BUSY_PIN, gpio_module.IN)
+        gpio_module.setup(PN5180_RESET_PIN, gpio_module.OUT, initial=gpio_module.HIGH)
+        self._hardware_reset()
         self._bytes_in_card_buffer = 0
+
+    def _hardware_reset(self) -> None:
+        gpio_module.output(PN5180_RESET_PIN, gpio_module.LOW)
+        time.sleep(0.02)
+        gpio_module.output(PN5180_RESET_PIN, gpio_module.HIGH)
+        time.sleep(0.02)
 
     def _wait_ready(self) -> None:
         while gpio_module.input(PN5180_BUSY_PIN):
@@ -315,12 +324,17 @@ class DirectSpiPN5180Iso15693Reader:
         return self._spi.readbytes(length)
 
     def _card_has_responded(self) -> bool:
-        self._send([0x04, 0x13])  # READ_REGISTER RX_STATUS
-        rx_status = self._read(4)
-        self._send([0x04, 0x02])  # READ_REGISTER IRQ_STATUS
-        self._read(4)
-        self._bytes_in_card_buffer = rx_status[0] if rx_status else 0
-        return self._bytes_in_card_buffer > 0
+        deadline = time.monotonic() + PN5180_RESPONSE_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            self._send([0x04, 0x13])  # READ_REGISTER RX_STATUS
+            rx_status = self._read(4)
+            self._send([0x04, 0x02])  # READ_REGISTER IRQ_STATUS
+            self._read(4)
+            self._bytes_in_card_buffer = rx_status[0] if rx_status else 0
+            if self._bytes_in_card_buffer > 0:
+                return True
+            time.sleep(0.005)
+        return False
 
     def _prepare_iso15693(self) -> None:
         self._send([0x11, 0x0D, 0x8D])  # LOAD_RF_CONFIG: ISO 15693
