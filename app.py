@@ -143,7 +143,7 @@ PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
 ENABLE_UID_BACKDOOR = os.getenv('ENABLE_UID_BACKDOOR', 'false').lower() in {'1', 'true', 'yes', 'on'}
-PN5180_BACKEND = os.getenv('PN5180_BACKEND', 'pn5180pi').lower()
+PN5180_BACKEND = os.getenv('PN5180_BACKEND', 'auto').lower()
 NFC_READER_BACKEND = PN5180_BACKEND
 
 ISO15693_FLAG_DATA_RATE_HIGH = 0x02
@@ -359,7 +359,7 @@ class DirectSpiPN5180Iso15693Reader:
         return self._read_after_command([0x04, register], 4)
 
     def _read_data(self, length: int) -> list[int]:
-        return self._read_after_command([0x0A], length)
+        return self._read_after_command([0x0A, 0x00], length)
 
     def _card_has_responded(self) -> bool:
         deadline = time.monotonic() + PN5180_RESPONSE_TIMEOUT_SECONDS
@@ -388,13 +388,34 @@ class DirectSpiPN5180Iso15693Reader:
         self._send([0x17, 0x00])  # RF_OFF
         return response
 
+    def _send_inventory_eof(self) -> None:
+        self._send([0x02, 0x18, 0x3F, 0xFB, 0xFF, 0xFF])
+        self._send([0x02, 0x00, 0xF8, 0xFF, 0xFF, 0xFF])
+        self._send([0x01, 0x00, 0x03, 0x00, 0x00, 0x00])
+        self._send([0x00, 0x03, 0xFF, 0xFF, 0x0F, 0x00])
+        self._send([0x09, 0x00])
+
     def poll_uid(self) -> Optional[bytes]:
-        frame = bytes([
+        self._prepare_iso15693()
+        self._send([
+            0x09,
+            0x00,
             ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
             ISO15693_CMD_INVENTORY,
             0x00,
         ])
-        return parse_iso15693_inventory_response(self.exchange(frame))
+        try:
+            for slot_index in range(16):
+                if self._card_has_responded():
+                    response = bytes(self._read_data(self._bytes_in_card_buffer))
+                    uid = parse_iso15693_inventory_response(response)
+                    if uid:
+                        return uid
+                if slot_index < 15:
+                    self._send_inventory_eof()
+        finally:
+            self._send([0x17, 0x00])  # RF_OFF
+        return None
 
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         uid = validate_uid(uid)
@@ -551,9 +572,9 @@ def initialize_hardware() -> None:
     global reader, hardware_status
     try:
         reset_pn5180_hardware()
-        if PN5180_BACKEND == 'pn5180pi':
-            reader = PN5180Iso15693Reader()
-        elif PN5180_BACKEND == 'auto' and PN5180_CLASS is not None and (spidev_module is None or gpio_module is None):
+        if PN5180_BACKEND == 'direct-spi':
+            reader = DirectSpiPN5180Iso15693Reader()
+        elif PN5180_CLASS is not None:
             reader = PN5180Iso15693Reader()
         else:
             reader = DirectSpiPN5180Iso15693Reader()

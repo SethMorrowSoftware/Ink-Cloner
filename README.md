@@ -12,7 +12,7 @@ Professional Flask + Socket.IO **PN5180** console with **ink cloning as the prim
 
 ## PN5180 setup
 
-The app defaults to the `pn5180pi` wrapper backend so the library controls PN5180 SPI timing and ISO 15693 RF setup. You can opt into the built-in direct SPI transport with `PN5180_BACKEND=direct-spi` for low-level debugging.
+The app defaults to `PN5180_BACKEND=auto`: it uses a compatible `pn5180pi` driver when that package exports one, otherwise it falls back to the built-in direct SPI transport.
 
 Use this when the PN5180 module is wired directly to the Pi SPI bus plus NSS, BUSY, and RESET GPIO lines.
 
@@ -86,9 +86,10 @@ The web UI can still start on a development machine without PN5180 libraries ins
 - `SECRET_KEY` (default `change-me-in-production`)
 - `CORS_ALLOWED_ORIGINS` (default `*`)
 - `PORT` (default `5000`)
-- `PN5180_BACKEND` (default `pn5180pi`; use `direct-spi` only for low-level debugging, or `auto` to use pn5180pi only if direct SPI dependencies are unavailable)
+- `PN5180_BACKEND` (default `auto`; use `pn5180pi` to force the library wrapper or `direct-spi` to force the built-in SPI transport)
 - `PN5180_NSS_PIN` (default `8`, BCM numbering for direct PN5180 boards)
 - `PN5180_BUSY_PIN` (default `24`, BCM numbering for direct PN5180 boards)
+  - The pyPN5180 Raspberry Pi examples use GPIO 25 as BUSY; set `PN5180_BUSY_PIN=25` if you followed that wiring.
 - `PN5180_RESET_PIN` (default `23`, BCM numbering for direct PN5180 boards)
   - Some pn5180pi examples wire RESET to GPIO 25; set `PN5180_RESET_PIN=25` in `/etc/default/ink-cloner` if your board is wired that way.
 - `PN5180_RESPONSE_TIMEOUT_SECONDS` (default `0.25`, minimum `0.01`, direct SPI response wait time)

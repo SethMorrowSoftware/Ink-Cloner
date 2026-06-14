@@ -92,6 +92,49 @@ class HelperTests(unittest.TestCase):
         self.assertIn([0x09, 0x00, 0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04], fake_spidev.spi.frames)
 
 
+
+    def test_direct_spi_reader_checks_later_iso15693_inventory_slots(self):
+        class FakeSpi:
+            def __init__(self):
+                self.frames = []
+                self.max_speed_hz = 0
+                self.no_cs = False
+                self.reads = [
+                    [0, 0, 0, 0],  # slot 0 RX_STATUS: no card
+                    [0, 0, 0, 0],  # slot 0 IRQ_STATUS
+                    [10, 0, 0, 0],  # slot 1 RX_STATUS: response
+                    [0, 0, 0, 0],  # slot 1 IRQ_STATUS
+                    [0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0],
+                ]
+
+            def open(self, _bus, _device):
+                pass
+
+            def writebytes(self, frame):
+                self.frames.append(list(frame))
+
+            def readbytes(self, length):
+                data = self.reads.pop(0)
+                return data[:length]
+
+        class FakeSpidevModule:
+            def __init__(self):
+                self.spi = FakeSpi()
+
+            def SpiDev(self):
+                return self.spi
+
+        fake_spidev = FakeSpidevModule()
+        fake_gpio = SimpleNamespace(BCM='BCM', IN='IN', OUT='OUT', HIGH=1, LOW=0, setmode=lambda _mode: None, setup=lambda *_args, **_kwargs: None, output=lambda *_args: None, input=lambda _pin: 0)
+        with (
+            patch.object(app, 'spidev_module', fake_spidev),
+            patch.object(app, 'gpio_module', fake_gpio),
+        ):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            uid = reader.poll_uid()
+
+        self.assertEqual(uid, bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
+
     def test_pn5180_reader_uses_library_iso15693_inventory_when_available(self):
         class FakePn5180:
             def __init__(self, _nss, _busy, _reset):
@@ -188,8 +231,23 @@ class HelperTests(unittest.TestCase):
         self.assertIn('pigpiod is running', message)
 
     def test_backend_name_is_defined_for_routes_and_history(self):
-        self.assertEqual(app.NFC_READER_BACKEND, 'pn5180pi')
+        self.assertEqual(app.NFC_READER_BACKEND, 'auto')
 
+
+
+    def test_initialize_hardware_falls_back_to_direct_spi_when_pn5180pi_has_no_class(self):
+        class FakeDirectReader:
+            label = 'fake direct fallback'
+
+        with (
+            patch.object(app, 'PN5180_BACKEND', 'pn5180pi'),
+            patch.object(app, 'PN5180_CLASS', None),
+            patch.object(app, 'DirectSpiPN5180Iso15693Reader', FakeDirectReader),
+        ):
+            app.initialize_hardware()
+
+        self.assertEqual(app.hardware_status, 'Connected: fake direct fallback')
+        self.assertIsInstance(app.reader, FakeDirectReader)
 
     def test_initialize_hardware_uses_direct_spi_when_configured(self):
         class FakeDirectReader:
