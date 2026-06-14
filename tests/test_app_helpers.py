@@ -90,6 +90,26 @@ class HelperTests(unittest.TestCase):
         self.assertIn([0x09, 0x00, 0x06, 0x01, 0x00], fake_spidev.spi.frames)
         self.assertIn([0x09, 0x00, 0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04], fake_spidev.spi.frames)
 
+
+    def test_pn5180_reader_uses_library_iso15693_inventory_when_available(self):
+        class FakePn5180:
+            def __init__(self, _nss, _busy, _reset):
+                self.writes = []
+
+            def inventory_iso15693(self):
+                return bytes([0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0])
+
+            def write_single_block_iso15693(self, uid, block_index, data):
+                self.writes.append((uid, block_index, data))
+
+        with patch.object(app, 'PN5180_CLASS', FakePn5180):
+            reader = app.PN5180Iso15693Reader()
+            uid = reader.poll_uid()
+            reader.write_block(uid, 5, bytes([1, 2, 3, 4]))
+
+        self.assertEqual(uid, bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
+        self.assertEqual(reader.device.writes, [(uid, 5, bytes([1, 2, 3, 4]))])
+
     def test_pn5180_reader_uses_raw_iso15693_frames(self):
         class FakePn5180:
             def __init__(self, nss, busy, reset):
@@ -136,7 +156,21 @@ class HelperTests(unittest.TestCase):
         self.assertIn('pigpiod is running', message)
 
     def test_backend_name_is_defined_for_routes_and_history(self):
-        self.assertEqual(app.NFC_READER_BACKEND, 'pn5180pi')
+        self.assertEqual(app.NFC_READER_BACKEND, 'direct-spi')
+
+
+    def test_initialize_hardware_prefers_direct_spi_backend_by_default(self):
+        class FakeDirectReader:
+            label = 'fake direct'
+
+        with (
+            patch.object(app, 'PN5180_BACKEND', 'direct-spi'),
+            patch.object(app, 'DirectSpiPN5180Iso15693Reader', FakeDirectReader),
+        ):
+            app.initialize_hardware()
+
+        self.assertEqual(app.hardware_status, 'Connected: fake direct')
+        self.assertIsInstance(app.reader, FakeDirectReader)
 
     def test_record_operation_allows_detail_named_status(self):
         with patch.object(app, 'operation_history', []):

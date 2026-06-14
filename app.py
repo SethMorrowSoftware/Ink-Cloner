@@ -140,7 +140,8 @@ PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
 ENABLE_UID_BACKDOOR = os.getenv('ENABLE_UID_BACKDOOR', 'false').lower() in {'1', 'true', 'yes', 'on'}
-NFC_READER_BACKEND = 'pn5180pi'
+PN5180_BACKEND = os.getenv('PN5180_BACKEND', 'direct-spi').lower()
+NFC_READER_BACKEND = PN5180_BACKEND
 
 ISO15693_FLAG_DATA_RATE_HIGH = 0x02
 ISO15693_FLAG_INVENTORY = 0x04
@@ -282,6 +283,14 @@ def validate_uid(uid: bytes) -> bytes:
     return uid
 
 
+def first_callable(target: Any, *names: str) -> Any:
+    for name in names:
+        candidate = getattr(target, name, None)
+        if callable(candidate):
+            return candidate
+    return None
+
+
 def validate_iso15693_response(response: bytes) -> None:
     if response and response[0] & 0x01:
         error_code = response[1] if len(response) > 1 else 0
@@ -387,10 +396,24 @@ class PN5180Iso15693Reader:
         if PN5180_CLASS is None:
             raise RuntimeError('Install pn5180pi and confirm it exports a Pn5180 or PN5180 driver class')
         self.device = PN5180_CLASS(PN5180_NSS_PIN, PN5180_BUSY_PIN, PN5180_RESET_PIN)
+        self._inventory_iso15693 = first_callable(
+            self.device,
+            'inventory_iso15693',
+            'inventoryIso15693',
+            'inventory_iso_15693',
+            'inventory',
+        )
+        self._write_block_iso15693 = first_callable(
+            self.device,
+            'write_single_block_iso15693',
+            'writeSingleBlockIso15693',
+            'write_block_iso15693',
+            'writeBlockIso15693',
+        )
         self._send_data = getattr(self.device, 'send_data', None) or getattr(self.device, 'sendData', None)
         self._receive_data = getattr(self.device, 'receive_data', None) or getattr(self.device, 'receiveData', None)
-        if not callable(self._send_data) or not callable(self._receive_data):
-            raise RuntimeError('pn5180pi driver must expose send_data(frame) and receive_data()')
+        if not callable(self._inventory_iso15693) and (not callable(self._send_data) or not callable(self._receive_data)):
+            raise RuntimeError('pn5180pi driver must expose inventory_iso15693() or send_data(frame) and receive_data()')
 
     def exchange(self, frame: bytes) -> bytes:
         self._send_data(bytes(frame))
@@ -398,6 +421,11 @@ class PN5180Iso15693Reader:
         return bytes(response or b'')
 
     def poll_uid(self) -> Optional[bytes]:
+        if callable(self._inventory_iso15693):
+            response = self._inventory_iso15693()
+            if isinstance(response, (list, tuple)) and response:
+                response = response[0]
+            return parse_iso15693_uid(response)
         frame = bytes([
             ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
             ISO15693_CMD_INVENTORY,
@@ -410,6 +438,9 @@ class PN5180Iso15693Reader:
         data = validate_block_data(data)
         if not 0 <= block_index <= 0xFF:
             raise ValueError(f'ISO 15693 block index out of range: {block_index}')
+        if callable(self._write_block_iso15693):
+            self._write_block_iso15693(uid, block_index, data)
+            return
         frame = bytes([
             ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
             ISO15693_CMD_WRITE_SINGLE_BLOCK,
@@ -464,7 +495,9 @@ def describe_hardware_error(exc: Exception) -> str:
 def initialize_hardware() -> None:
     global reader, hardware_status
     try:
-        if PN5180_CLASS is not None:
+        if PN5180_BACKEND == 'pn5180pi':
+            reader = PN5180Iso15693Reader()
+        elif PN5180_BACKEND == 'auto' and PN5180_CLASS is not None and (spidev_module is None or gpio_module is None):
             reader = PN5180Iso15693Reader()
         else:
             reader = DirectSpiPN5180Iso15693Reader()
