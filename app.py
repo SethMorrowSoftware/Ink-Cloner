@@ -5,6 +5,7 @@ import importlib
 import importlib.util
 import json
 import os
+import pkgutil
 import time
 from datetime import datetime, timezone
 from threading import Lock
@@ -73,7 +74,32 @@ else:
     SocketIO = _MissingWebDependencySocketIO
 
 pn5180pi_module = _optional_module('pn5180pi')
-PN5180_CLASS = getattr(pn5180pi_module, 'Pn5180', None)
+
+
+def resolve_pn5180_class(module: Any) -> Any:
+    """Find the PN5180 driver class across known pn5180pi export styles."""
+    if module is None:
+        return None
+    for class_name in ('Pn5180', 'PN5180'):
+        driver_class = getattr(module, class_name, None)
+        if driver_class is not None:
+            return driver_class
+    module_paths = getattr(module, '__path__', None)
+    if module_paths is None:
+        return None
+    for submodule in pkgutil.iter_modules(module_paths, f'{module.__name__}.'):
+        try:
+            imported_submodule = importlib.import_module(submodule.name)
+        except Exception:
+            continue
+        for class_name in ('Pn5180', 'PN5180'):
+            driver_class = getattr(imported_submodule, class_name, None)
+            if driver_class is not None:
+                return driver_class
+    return None
+
+
+PN5180_CLASS = resolve_pn5180_class(pn5180pi_module)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-me-in-production')
@@ -260,18 +286,18 @@ def validate_iso15693_response(response: bytes) -> None:
 
 
 class PN5180Iso15693Reader:
-    """Direct PN5180 ISO 15693 reader using pn5180pi.Pn5180 raw send/receive."""
+    """Direct PN5180 ISO 15693 reader using a pn5180pi raw send/receive driver."""
 
     label = 'PN5180 (pn5180pi raw ISO 15693)'
 
     def __init__(self) -> None:
         if PN5180_CLASS is None:
-            raise RuntimeError('Install pn5180pi and confirm it exports pn5180pi.Pn5180')
+            raise RuntimeError('Install pn5180pi and confirm it exports a Pn5180 or PN5180 driver class')
         self.device = PN5180_CLASS(PN5180_NSS_PIN, PN5180_BUSY_PIN, PN5180_RESET_PIN)
         self._send_data = getattr(self.device, 'send_data', None) or getattr(self.device, 'sendData', None)
         self._receive_data = getattr(self.device, 'receive_data', None) or getattr(self.device, 'receiveData', None)
         if not callable(self._send_data) or not callable(self._receive_data):
-            raise RuntimeError('pn5180pi.Pn5180 must expose send_data(frame) and receive_data()')
+            raise RuntimeError('pn5180pi driver must expose send_data(frame) and receive_data()')
 
     def exchange(self, frame: bytes) -> bytes:
         self._send_data(bytes(frame))

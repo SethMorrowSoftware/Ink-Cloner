@@ -12,7 +12,7 @@ Professional Flask + Socket.IO **PN5180** console with **ink cloning as the prim
 
 ## PN5180 setup
 
-The app uses the `pn5180pi` library directly through `pn5180pi.Pn5180` and sends raw ISO 15693 / NFC-V frames for inventory and write-single-block operations.
+The app uses the `pn5180pi` library directly through the `pn5180pi` PN5180 driver class and sends raw ISO 15693 / NFC-V frames for inventory and write-single-block operations.
 
 Use this when the PN5180 module is wired directly to the Pi SPI bus plus NSS, BUSY, and RESET GPIO lines.
 

@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -34,6 +35,13 @@ class HelperTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             app.validate_iso15693_response(bytes([0x01, 0x0F]))
 
+
+    def test_resolve_pn5180_class_accepts_uppercase_export(self):
+        class FakePN5180:
+            pass
+
+        module = SimpleNamespace(PN5180=FakePN5180)
+        self.assertIs(app.resolve_pn5180_class(module), FakePN5180)
 
     def test_pn5180_reader_uses_raw_iso15693_frames(self):
         class FakePn5180:
