@@ -15,7 +15,7 @@ fi
 
 echo "==> Installing system dependencies"
 apt-get update
-apt-get install -y python3 python3-venv python3-pip git pigpio python3-pigpio
+apt-get install -y python3 python3-venv python3-pip python3-dev git pigpio python3-pigpio python3-spidev python3-rpi.gpio build-essential rsync
 
 echo "==> Enabling SPI interface"
 if command -v raspi-config >/dev/null 2>&1; then
@@ -52,6 +52,8 @@ TAG_DETECTION_POLL_SECONDS=0.2
 PN5180_NSS_PIN=8
 PN5180_BUSY_PIN=24
 PN5180_RESET_PIN=23
+PN5180_BACKEND=pn5180pi
+PN5180_RESPONSE_TIMEOUT_SECONDS=0.25
 ISO15693_BLOCK_SIZE=4
 ENABLE_UID_BACKDOOR=false
 EOF
