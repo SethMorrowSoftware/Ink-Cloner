@@ -74,6 +74,8 @@ else:
     SocketIO = _MissingWebDependencySocketIO
 
 pn5180pi_module = _optional_module('pn5180pi')
+spidev_module = _optional_module('spidev')
+gpio_module = _optional_module('RPi.GPIO')
 
 
 def resolve_pn5180_class(module: Any) -> Any:
@@ -285,6 +287,83 @@ def validate_iso15693_response(response: bytes) -> None:
         raise RuntimeError(f'ISO 15693 tag returned error 0x{error_code:02X}')
 
 
+class DirectSpiPN5180Iso15693Reader:
+    """Direct PN5180 ISO 15693 reader using spidev and RPi.GPIO."""
+
+    label = 'PN5180 (direct SPI ISO 15693)'
+
+    def __init__(self) -> None:
+        if spidev_module is None or gpio_module is None:
+            raise RuntimeError('Install spidev and RPi.GPIO dependencies for direct PN5180 SPI access')
+        self._spi = spidev_module.SpiDev()
+        self._spi.open(0, 0 if PN5180_NSS_PIN == 8 else 1)
+        self._spi.max_speed_hz = env_int('PN5180_SPI_HZ', 50000, minimum=1000)
+        gpio_module.setmode(gpio_module.BCM)
+        gpio_module.setup(PN5180_BUSY_PIN, gpio_module.IN)
+        self._bytes_in_card_buffer = 0
+
+    def _wait_ready(self) -> None:
+        while gpio_module.input(PN5180_BUSY_PIN):
+            time.sleep(0.01)
+
+    def _send(self, frame: list[int]) -> None:
+        self._wait_ready()
+        self._spi.writebytes(frame)
+        self._wait_ready()
+
+    def _read(self, length: int) -> list[int]:
+        return self._spi.readbytes(length)
+
+    def _card_has_responded(self) -> bool:
+        self._send([0x04, 0x13])  # READ_REGISTER RX_STATUS
+        rx_status = self._read(4)
+        self._send([0x04, 0x02])  # READ_REGISTER IRQ_STATUS
+        self._read(4)
+        self._bytes_in_card_buffer = rx_status[0] if rx_status else 0
+        return self._bytes_in_card_buffer > 0
+
+    def _prepare_iso15693(self) -> None:
+        self._send([0x11, 0x0D, 0x8D])  # LOAD_RF_CONFIG: ISO 15693
+        self._send([0x16, 0x00])  # RF_ON
+        self._send([0x00, 0x03, 0xFF, 0xFF, 0x0F, 0x00])  # WRITE_REGISTER IRQ_CLEAR
+        self._send([0x02, 0x00, 0xF8, 0xFF, 0xFF, 0xFF])  # SYSTEM_CONFIG idle mask
+        self._send([0x01, 0x00, 0x03, 0x00, 0x00, 0x00])  # SYSTEM_CONFIG transceive
+
+    def exchange(self, frame: bytes) -> bytes:
+        self._prepare_iso15693()
+        self._send([0x09, 0x00] + list(frame))  # SEND_DATA, complete bytes
+        response = b''
+        if self._card_has_responded():
+            self._send([0x0A, 0x00])  # READ_DATA
+            response = bytes(self._read(self._bytes_in_card_buffer))
+        self._send([0x17, 0x00])  # RF_OFF
+        return response
+
+    def poll_uid(self) -> Optional[bytes]:
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
+            ISO15693_CMD_INVENTORY,
+            0x00,
+        ])
+        return parse_iso15693_inventory_response(self.exchange(frame))
+
+    def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
+        uid = validate_uid(uid)
+        data = validate_block_data(data)
+        if not 0 <= block_index <= 0xFF:
+            raise ValueError(f'ISO 15693 block index out of range: {block_index}')
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_WRITE_SINGLE_BLOCK,
+        ]) + uid[::-1] + bytes([block_index]) + data
+        validate_iso15693_response(self.exchange(frame))
+
+    def write_uid_backdoor(self, uid: bytes) -> None:
+        uid = validate_uid(uid)
+        frame = bytes([ISO15693_FLAG_DATA_RATE_HIGH, ISO15693_CMD_WRITE_UID_BACKDOOR, 0x00]) + uid
+        validate_iso15693_response(self.exchange(frame))
+
+
 class PN5180Iso15693Reader:
     """Direct PN5180 ISO 15693 reader using a pn5180pi raw send/receive driver."""
 
@@ -360,13 +439,21 @@ def describe_hardware_error(exc: Exception) -> str:
             'confirm the installed pn5180pi package is selected, SPI is enabled, pigpiod is running, '
             'and the PN5180 NSS/BUSY/RESET/MOSI/MISO/SCK pins match the README wiring.'
         )
+    if 'Install spidev' in message or 'Install pn5180pi' in message:
+        return (
+            f'{message}. Install dependencies with install.sh or run '
+            'pip install -r requirements.txt in the application virtual environment.'
+        )
     return message
 
 
 def initialize_hardware() -> None:
     global reader, hardware_status
     try:
-        reader = PN5180Iso15693Reader()
+        if PN5180_CLASS is not None:
+            reader = PN5180Iso15693Reader()
+        else:
+            reader = DirectSpiPN5180Iso15693Reader()
         hardware_status = f'Connected: {reader.label}'
     except Exception as exc:
         reader = None

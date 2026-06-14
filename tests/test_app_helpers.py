@@ -43,6 +43,53 @@ class HelperTests(unittest.TestCase):
         module = SimpleNamespace(PN5180=FakePN5180)
         self.assertIs(app.resolve_pn5180_class(module), FakePN5180)
 
+
+    def test_direct_spi_reader_uses_raw_pn5180_commands(self):
+        class FakeSpi:
+            def __init__(self):
+                self.frames = []
+                self.max_speed_hz = 0
+                self.reads = [
+                    [10, 0, 0, 0],  # RX_STATUS for inventory response length
+                    [0, 0, 0, 0],  # IRQ_STATUS
+                    [0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0],
+                    [1, 0, 0, 0],  # RX_STATUS for write response length
+                    [0, 0, 0, 0],  # IRQ_STATUS
+                    [0x00],
+                ]
+
+            def open(self, bus, device):
+                self.opened = (bus, device)
+
+            def writebytes(self, frame):
+                self.frames.append(list(frame))
+
+            def readbytes(self, length):
+                data = self.reads.pop(0)
+                return data[:length]
+
+        class FakeSpidevModule:
+            def __init__(self):
+                self.spi = FakeSpi()
+
+            def SpiDev(self):
+                return self.spi
+
+        fake_spidev = FakeSpidevModule()
+        fake_gpio = SimpleNamespace(BCM='BCM', IN='IN', setmode=lambda _mode: None, setup=lambda *_args: None, input=lambda _pin: 0)
+
+        with (
+            patch.object(app, 'spidev_module', fake_spidev),
+            patch.object(app, 'gpio_module', fake_gpio),
+        ):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            uid = reader.poll_uid()
+            reader.write_block(uid, 5, bytes([1, 2, 3, 4]))
+
+        self.assertEqual(uid, bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
+        self.assertIn([0x09, 0x00, 0x06, 0x01, 0x00], fake_spidev.spi.frames)
+        self.assertIn([0x09, 0x00, 0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04], fake_spidev.spi.frames)
+
     def test_pn5180_reader_uses_raw_iso15693_frames(self):
         class FakePn5180:
             def __init__(self, nss, busy, reset):

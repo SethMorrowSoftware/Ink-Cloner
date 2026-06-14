@@ -12,7 +12,7 @@ Professional Flask + Socket.IO **PN5180** console with **ink cloning as the prim
 
 ## PN5180 setup
 
-The app uses the `pn5180pi` library directly through the `pn5180pi` PN5180 driver class and sends raw ISO 15693 / NFC-V frames for inventory and write-single-block operations.
+The app prefers a compatible `pn5180pi` raw driver when available. If that package does not export a usable driver class, the app falls back to its built-in direct SPI PN5180 transport using `spidev` and `RPi.GPIO`, then sends raw ISO 15693 / NFC-V frames for inventory and write-single-block operations.
 
 Use this when the PN5180 module is wired directly to the Pi SPI bus plus NSS, BUSY, and RESET GPIO lines.
 
@@ -68,7 +68,7 @@ python app.py
 ```
 Open: `http://localhost:5000`
 
-The web UI can still start on a development machine without PN5180 libraries installed; hardware actions will report that the reader is unavailable until the pn5180pi stack is installed and connected.
+The web UI can still start on a development machine without PN5180 libraries installed; hardware actions will report that the reader is unavailable until either a compatible `pn5180pi` stack or the direct SPI dependencies (`spidev` and `RPi.GPIO`) are installed and the reader is connected.
 
 ## Configuration
 - `SECRET_KEY` (default `change-me-in-production`)
