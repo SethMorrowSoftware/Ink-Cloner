@@ -12,7 +12,7 @@ Professional Flask + Socket.IO **PN5180** console with **ink cloning as the prim
 
 ## PN5180 setup
 
-The app uses the `pn5180pi` library directly through `pn5180pi.Pn5180` and sends raw ISO 15693 / NFC-V frames for inventory and write-single-block operations.
+The app prefers a compatible `pn5180pi` raw driver when available. If that package does not export a usable driver class, the app falls back to its built-in direct SPI PN5180 transport using `spidev` and `RPi.GPIO`, then sends raw ISO 15693 / NFC-V frames for inventory and write-single-block operations.
 
 Use this when the PN5180 module is wired directly to the Pi SPI bus plus NSS, BUSY, and RESET GPIO lines.
 
@@ -40,6 +40,24 @@ Default wiring assumptions use Raspberry Pi BCM GPIO numbers:
 
 > Important: many PN5180 boards require both 3.3V and 5V connected. SPI can appear alive with only 3.3V, but the antenna/RF field will not reliably power NFC-V stickers without 5V.
 
+
+## Troubleshooting
+
+### `No I2C device at address: 0x24`
+
+This application is configured for a direct PN5180 module on the Raspberry Pi SPI bus. A `No I2C device at address: 0x24` startup error means the active Python NFC stack is trying to initialize an I2C peripheral instead of the expected PN5180 SPI path.
+
+Check the following on the Raspberry Pi:
+
+```bash
+source /opt/ink-cloner/.venv/bin/activate
+python -c "import pn5180pi; print(pn5180pi.__file__)"
+sudo systemctl status pigpiod --no-pager
+sudo raspi-config nonint get_spi
+```
+
+Then confirm the PN5180 is wired to SPI0 (MOSI GPIO 10, MISO GPIO 9, SCK GPIO 11, CE0/NSS GPIO 8 by default), both 3.3V logic and 5V RF power are connected, and `/etc/default/ink-cloner` uses the correct `PN5180_NSS_PIN`, `PN5180_BUSY_PIN`, and `PN5180_RESET_PIN` values for your board.
+
 ## Quick start
 ```bash
 python3 -m venv .venv
@@ -50,7 +68,7 @@ python app.py
 ```
 Open: `http://localhost:5000`
 
-The web UI can still start on a development machine without PN5180 libraries installed; hardware actions will report that the reader is unavailable until the pn5180pi stack is installed and connected.
+The web UI can still start on a development machine without PN5180 libraries installed; hardware actions will report that the reader is unavailable until either a compatible `pn5180pi` stack or the direct SPI dependencies (`spidev` and `RPi.GPIO`) are installed and the reader is connected.
 
 ## Configuration
 - `SECRET_KEY` (default `change-me-in-production`)
