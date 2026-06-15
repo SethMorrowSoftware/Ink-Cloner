@@ -359,7 +359,7 @@ class DirectSpiPN5180Iso15693Reader:
         return self._read_after_command([0x04, register], 4)
 
     def _read_data(self, length: int) -> list[int]:
-        return self._read_after_command([0x0A, 0x00], length)
+        return self._read_after_command([0x0A], length)
 
     def _card_has_responded(self) -> bool:
         deadline = time.monotonic() + PN5180_RESPONSE_TIMEOUT_SECONDS
@@ -400,7 +400,7 @@ class DirectSpiPN5180Iso15693Reader:
         self._send([
             0x09,
             0x00,
-            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY | ISO15693_FLAG_ADDRESS,
             ISO15693_CMD_INVENTORY,
             0x00,
         ])
