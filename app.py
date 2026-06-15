@@ -77,7 +77,7 @@ else:
     SocketIO = _MissingWebDependencySocketIO
 
 pn5180pi_module = _optional_module('pn5180pi')
-spidev_module = _optional_module('spidev')
+pigpio_module = _optional_module('pigpio')
 gpio_module = _optional_module('RPi.GPIO')
 
 
@@ -301,46 +301,56 @@ def validate_iso15693_response(response: bytes) -> None:
 
 
 class DirectSpiPN5180Iso15693Reader:
-    """Direct PN5180 ISO 15693 reader using spidev and RPi.GPIO."""
+    """Direct PN5180 ISO 15693 reader using pigpio hardware SPI/GPIO."""
 
     label = 'PN5180 (direct SPI ISO 15693)'
 
     def __init__(self) -> None:
-        if spidev_module is None or gpio_module is None:
-            raise RuntimeError('Install spidev and RPi.GPIO dependencies for direct PN5180 SPI access')
-        self._spi = spidev_module.SpiDev()
-        self._spi.open(0, 0 if PN5180_NSS_PIN == 8 else 1)
-        self._spi.max_speed_hz = env_int('PN5180_SPI_HZ', 50000, minimum=1000)
-        if hasattr(self._spi, 'no_cs'):
-            self._spi.no_cs = True
-        gpio_module.setmode(gpio_module.BCM)
-        gpio_module.setup(PN5180_NSS_PIN, gpio_module.OUT, initial=gpio_module.HIGH)
-        gpio_module.setup(PN5180_BUSY_PIN, gpio_module.IN)
-        gpio_module.setup(PN5180_RESET_PIN, gpio_module.OUT, initial=gpio_module.HIGH)
+        if pigpio_module is None:
+            raise RuntimeError('Install pigpio and start pigpiod for direct PN5180 SPI access')
+        self._pi = pigpio_module.pi()
+        if not getattr(self._pi, 'connected', True):
+            raise RuntimeError('pigpiod is not running or is unreachable for direct PN5180 SPI access')
+        self._spi_channel = 0 if PN5180_NSS_PIN == 8 else 1
+        self._spi = self._pi.spi_open(
+            self._spi_channel,
+            env_int('PN5180_SPI_HZ', 50000, minimum=1000),
+            env_int('PN5180_SPI_FLAGS', 0, minimum=0),
+        )
+        self._pi.set_mode(PN5180_NSS_PIN, pigpio_module.OUTPUT)
+        self._pi.set_mode(PN5180_BUSY_PIN, pigpio_module.INPUT)
+        self._pi.set_mode(PN5180_RESET_PIN, pigpio_module.OUTPUT)
+        self._deselect()
         self._hardware_reset()
         self._bytes_in_card_buffer = 0
 
     def _hardware_reset(self) -> None:
-        gpio_module.output(PN5180_RESET_PIN, gpio_module.LOW)
+        self._pi.write(PN5180_RESET_PIN, 0)
         time.sleep(0.02)
-        gpio_module.output(PN5180_RESET_PIN, gpio_module.HIGH)
+        self._pi.write(PN5180_RESET_PIN, 1)
         time.sleep(0.02)
 
     def _wait_ready(self) -> None:
-        while gpio_module.input(PN5180_BUSY_PIN):
-            time.sleep(0.01)
+        while self._pi.read(PN5180_BUSY_PIN):
+            time.sleep(0.0001)
 
     def _select(self) -> None:
-        gpio_module.output(PN5180_NSS_PIN, gpio_module.LOW)
+        self._pi.write(PN5180_NSS_PIN, 0)
 
     def _deselect(self) -> None:
-        gpio_module.output(PN5180_NSS_PIN, gpio_module.HIGH)
+        self._pi.write(PN5180_NSS_PIN, 1)
+
+    def _spi_xfer(self, frame: list[int]) -> list[int]:
+        count, data = self._pi.spi_xfer(self._spi, bytes(frame))
+        if count < 0:
+            raise RuntimeError(f'pigpio SPI transfer failed with status {count}')
+        return list(data[:count])
 
     def _send(self, frame: list[int]) -> None:
         self._wait_ready()
         self._select()
         try:
-            self._spi.writebytes(frame)
+            self._spi_xfer(frame)
         finally:
             self._deselect()
         self._wait_ready()
@@ -349,9 +359,9 @@ class DirectSpiPN5180Iso15693Reader:
         self._wait_ready()
         self._select()
         try:
-            self._spi.writebytes(command)
+            self._spi_xfer(command)
             self._wait_ready()
-            return self._spi.readbytes(length)
+            return self._spi_xfer([0x00] * length)
         finally:
             self._deselect()
 
@@ -359,7 +369,7 @@ class DirectSpiPN5180Iso15693Reader:
         return self._read_after_command([0x04, register], 4)
 
     def _read_data(self, length: int) -> list[int]:
-        return self._read_after_command([0x0A, 0x00], length)
+        return self._read_after_command([0x0A], length)
 
     def _card_has_responded(self) -> bool:
         deadline = time.monotonic() + PN5180_RESPONSE_TIMEOUT_SECONDS
@@ -400,7 +410,7 @@ class DirectSpiPN5180Iso15693Reader:
         self._send([
             0x09,
             0x00,
-            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY | ISO15693_FLAG_ADDRESS,
             ISO15693_CMD_INVENTORY,
             0x00,
         ])
@@ -560,7 +570,7 @@ def describe_hardware_error(exc: Exception) -> str:
             'confirm the installed pn5180pi package is selected, SPI is enabled, pigpiod is running, '
             'and the PN5180 NSS/BUSY/RESET/MOSI/MISO/SCK pins match the README wiring.'
         )
-    if 'Install spidev' in message or 'Install pn5180pi' in message:
+    if 'Install pigpio' in message or 'Install pn5180pi' in message:
         return (
             f'{message}. Install dependencies with install.sh or run '
             'pip install -r requirements.txt in the application virtual environment.'
