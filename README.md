@@ -68,7 +68,7 @@ git pull
 sudo bash scripts/repair_pi_hardware.sh
 ```
 
-The script installs SPI/GPIO system packages, refreshes `/opt/ink-cloner`, installs the Python requirements into the service virtual environment, verifies `spidev`/`RPi.GPIO` imports, prints SPI/GPIO diagnostics, restarts the service, and shows recent logs.
+The script installs SPI/GPIO system packages, refreshes `/opt/ink-cloner`, installs the Python requirements into the service virtual environment, verifies `pigpio`/`RPi.GPIO` imports, prints SPI/GPIO diagnostics, restarts the service, and shows recent logs.
 
 ## Quick start
 ```bash
@@ -80,7 +80,7 @@ python app.py
 ```
 Open: `http://localhost:5000`
 
-The web UI can still start on a development machine without PN5180 libraries installed; hardware actions will report that the reader is unavailable until either a compatible `pn5180pi` stack or the direct SPI dependencies (`spidev` and `RPi.GPIO`) are installed and the reader is connected.
+The web UI can still start on a development machine without PN5180 libraries installed; hardware actions will report that the reader is unavailable until either a compatible `pn5180pi` stack or the direct SPI dependencies (`pigpio`, `pigpiod`, and `RPi.GPIO`) are installed and the reader is connected.
 
 ## Configuration
 - `SECRET_KEY` (default `change-me-in-production`)

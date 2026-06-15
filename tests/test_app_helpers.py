@@ -44,12 +44,14 @@ class HelperTests(unittest.TestCase):
         self.assertIs(app.resolve_pn5180_class(module), FakePN5180)
 
 
-    def test_direct_spi_reader_uses_raw_pn5180_commands(self):
-        class FakeSpi:
+    def test_direct_spi_reader_uses_pigpio_raw_pn5180_commands(self):
+        class FakePi:
+            connected = True
+
             def __init__(self):
-                self.frames = []
-                self.max_speed_hz = 0
-                self.no_cs = False
+                self.modes = []
+                self.writes = []
+                self.transfers = []
                 self.reads = [
                     [10, 0, 0, 0],  # RX_STATUS for inventory response length
                     [0, 0, 0, 0],  # IRQ_STATUS
@@ -59,81 +61,97 @@ class HelperTests(unittest.TestCase):
                     [0x00],
                 ]
 
-            def open(self, bus, device):
-                self.opened = (bus, device)
+            def spi_open(self, channel, baud, flags):
+                self.opened = (channel, baud, flags)
+                return 7
 
-            def writebytes(self, frame):
-                self.frames.append(list(frame))
+            def set_mode(self, pin, mode):
+                self.modes.append((pin, mode))
 
-            def readbytes(self, length):
-                data = self.reads.pop(0)
-                return data[:length]
+            def write(self, pin, value):
+                self.writes.append((pin, value))
 
-        class FakeSpidevModule:
+            def read(self, _pin):
+                return 0
+
+            def spi_xfer(self, handle, frame):
+                data = list(frame)
+                self.transfers.append(data)
+                if all(byte == 0 for byte in data) and self.reads:
+                    response = self.reads.pop(0)[:len(data)]
+                    return len(response), bytearray(response)
+                return len(data), bytearray(len(data))
+
+        class FakePigpioModule:
+            INPUT = 'INPUT'
+            OUTPUT = 'OUTPUT'
+
             def __init__(self):
-                self.spi = FakeSpi()
+                self.pi_instance = FakePi()
 
-            def SpiDev(self):
-                return self.spi
+            def pi(self):
+                return self.pi_instance
 
-        fake_spidev = FakeSpidevModule()
-        fake_gpio = SimpleNamespace(BCM='BCM', IN='IN', OUT='OUT', HIGH=1, LOW=0, setmode=lambda _mode: None, setup=lambda *_args, **_kwargs: None, output=lambda *_args: None, input=lambda _pin: 0)
+        fake_pigpio = FakePigpioModule()
 
-        with (
-            patch.object(app, 'spidev_module', fake_spidev),
-            patch.object(app, 'gpio_module', fake_gpio),
-        ):
+        with patch.object(app, 'pigpio_module', fake_pigpio):
             reader = app.DirectSpiPN5180Iso15693Reader()
             uid = reader.poll_uid()
             reader.write_block(uid, 5, bytes([1, 2, 3, 4]))
 
         self.assertEqual(uid, bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
-        self.assertIn([0x09, 0x00, 0x06, 0x01, 0x00], fake_spidev.spi.frames)
-        self.assertIn([0x09, 0x00, 0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04], fake_spidev.spi.frames)
+        self.assertIn([0x09, 0x00, 0x26, 0x01, 0x00], fake_pigpio.pi_instance.transfers)
+        self.assertIn([0x0A], fake_pigpio.pi_instance.transfers)
+        self.assertIn([0x09, 0x00, 0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04], fake_pigpio.pi_instance.transfers)
 
 
 
-    def test_direct_spi_reader_checks_later_iso15693_inventory_slots(self):
-        class FakeSpi:
+    def test_direct_spi_reader_keeps_chip_select_active_during_busy_wait_before_read(self):
+        class FakePi:
+            connected = True
+
             def __init__(self):
-                self.frames = []
-                self.max_speed_hz = 0
-                self.no_cs = False
-                self.reads = [
-                    [0, 0, 0, 0],  # slot 0 RX_STATUS: no card
-                    [0, 0, 0, 0],  # slot 0 IRQ_STATUS
-                    [10, 0, 0, 0],  # slot 1 RX_STATUS: response
-                    [0, 0, 0, 0],  # slot 1 IRQ_STATUS
-                    [0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0],
-                ]
+                self.events = []
+                self.busy_reads = [1, 0]
 
-            def open(self, _bus, _device):
+            def spi_open(self, _channel, _baud, _flags):
+                return 7
+
+            def set_mode(self, *_args):
                 pass
 
-            def writebytes(self, frame):
-                self.frames.append(list(frame))
+            def write(self, pin, value):
+                self.events.append(('write', pin, value))
 
-            def readbytes(self, length):
-                data = self.reads.pop(0)
-                return data[:length]
+            def read(self, pin):
+                self.events.append(('read', pin))
+                return self.busy_reads.pop(0) if self.busy_reads else 0
 
-        class FakeSpidevModule:
+            def spi_xfer(self, _handle, frame):
+                data = list(frame)
+                self.events.append(('xfer', data))
+                return len(data), bytearray(len(data))
+
+        class FakePigpioModule:
+            INPUT = 'INPUT'
+            OUTPUT = 'OUTPUT'
+
             def __init__(self):
-                self.spi = FakeSpi()
+                self.pi_instance = FakePi()
 
-            def SpiDev(self):
-                return self.spi
+            def pi(self):
+                return self.pi_instance
 
-        fake_spidev = FakeSpidevModule()
-        fake_gpio = SimpleNamespace(BCM='BCM', IN='IN', OUT='OUT', HIGH=1, LOW=0, setmode=lambda _mode: None, setup=lambda *_args, **_kwargs: None, output=lambda *_args: None, input=lambda _pin: 0)
-        with (
-            patch.object(app, 'spidev_module', fake_spidev),
-            patch.object(app, 'gpio_module', fake_gpio),
-        ):
+        fake_pigpio = FakePigpioModule()
+        with patch.object(app, 'pigpio_module', fake_pigpio):
             reader = app.DirectSpiPN5180Iso15693Reader()
-            uid = reader.poll_uid()
+            reader._read_after_command([0x0A], 1)
 
-        self.assertEqual(uid, bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
+        events = fake_pigpio.pi_instance.events
+        command_index = events.index(('xfer', [0x0A]))
+        response_index = events.index(('xfer', [0x00]))
+        deselect_index = events.index(('write', app.PN5180_NSS_PIN, 1), command_index)
+        self.assertGreater(deselect_index, response_index)
 
     def test_pn5180_reader_uses_library_iso15693_inventory_when_available(self):
         class FakePn5180:
