@@ -66,6 +66,29 @@ If the web UI says the PN5180 is connected but scans time out:
 
 ## Troubleshooting
 
+### `pip install` fails on `pn5180pi` (e.g. piwheels TLS/SSL errors)
+
+`pn5180pi` is **optional** and is only used by the non-default `PN5180_BACKEND=pn5180pi`
+backend. The default `direct-spi` backend talks to the PN5180 through `pigpio` and never
+imports `pn5180pi`, so a failure fetching it must not block the app. The core
+`requirements.txt` no longer lists it, and `install.sh` / `repair_pi_hardware.sh` install
+it best-effort and continue on failure.
+
+If you installed before this change (or pinned the old `requirements.txt`) and the install
+aborts on `pn5180pi`, install just the core dependencies:
+
+```bash
+/opt/ink-cloner/.venv/bin/pip install -r requirements.txt
+sudo systemctl restart ink-cloner.service
+```
+
+To use the optional library backend later, install it separately once your network/mirror
+is healthy:
+
+```bash
+/opt/ink-cloner/.venv/bin/pip install -r requirements-pn5180pi.txt
+```
+
 ### `No I2C device at address: 0x24`
 
 This application is configured for a direct PN5180 module on the Raspberry Pi SPI bus. A `No I2C device at address: 0x24` startup error means the active Python NFC stack is trying to initialize an I2C peripheral instead of the expected PN5180 SPI path.

@@ -66,6 +66,11 @@ run_as_user "$APP_DIR/.venv/bin/python" -m pip install --upgrade pip
 run_as_user "$APP_DIR/.venv/bin/pip" install --upgrade -r "$APP_DIR/requirements.txt"
 run_as_user "$APP_DIR/.venv/bin/pip" install --upgrade pigpio
 
+# Optional library-wrapper backend (PN5180_BACKEND=pn5180pi). A piwheels/network
+# hiccup here must not abort the repair; the default direct-spi backend uses pigpio.
+run_as_user "$APP_DIR/.venv/bin/pip" install --upgrade -r "$APP_DIR/requirements-pn5180pi.txt" \
+  || warn "Optional pn5180pi not installed; the default direct-spi backend does not require it."
+
 if [[ ! -f /etc/default/ink-cloner ]]; then
   info "Creating default /etc/default/ink-cloner"
   cat > /etc/default/ink-cloner <<'ENVEOF'

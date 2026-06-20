@@ -42,6 +42,12 @@ sudo -u "$RUN_USER" python3 -m venv "$INSTALL_DIR/.venv"
 sudo -u "$RUN_USER" "$INSTALL_DIR/.venv/bin/python" -m pip install --upgrade pip
 sudo -u "$RUN_USER" "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
+# Optional library-wrapper backend (PN5180_BACKEND=pn5180pi). The default
+# direct-spi backend does not need this, so never abort the install when the
+# package or its index (e.g. piwheels) is unreachable.
+sudo -u "$RUN_USER" "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements-pn5180pi.txt" \
+  || echo "WARNING: optional pn5180pi not installed; the default direct-spi backend does not require it."
+
 echo "==> Writing environment file"
 cat > /etc/default/ink-cloner <<EOF
 SECRET_KEY=change-me-in-production
