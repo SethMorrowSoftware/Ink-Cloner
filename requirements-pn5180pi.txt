@@ -1,0 +1,7 @@
+# Optional dependency: ONLY needed for the non-default PN5180_BACKEND=pn5180pi
+# (the library-wrapper backend). The default and recommended direct-spi backend
+# talks to the PN5180 over pigpio and does not import this package, so a failure
+# fetching it (for example a flaky piwheels mirror) must never block the core
+# install. Install it separately when you intentionally want the library backend:
+#   pip install -r requirements-pn5180pi.txt
+pn5180pi>=0.1.2
