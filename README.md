@@ -18,7 +18,7 @@ Use this when the PN5180 module is wired directly to the Pi SPI0 bus plus NSS, B
 
 ```bash
 sudo apt update
-sudo apt install -y pigpio python3-pigpio python3-rpi.gpio python3-venv
+sudo apt install -y pigpio python3-pigpio python3-venv
 sudo raspi-config nonint do_spi 0
 sudo systemctl enable --now pigpiod
 export PN5180_NSS_PIN=8
@@ -30,7 +30,7 @@ python app.py
 
 ### Wiring diagram using regular Raspberry Pi physical pin numbers
 
-The environment variables still use **BCM GPIO numbers** because `pigpio` and `RPi.GPIO` address pins that way. The wiring table below gives the normal Raspberry Pi header pin numbers first, which are the pin numbers printed in most Pi Zero wiring diagrams.
+The environment variables still use **BCM GPIO numbers** because `pigpio` addresses pins that way. The wiring table below gives the normal Raspberry Pi header pin numbers first, which are the pin numbers printed in most Pi Zero wiring diagrams.
 
 | PN5180 module pin | Raspberry Pi physical header pin | BCM GPIO / Pi function | App setting |
 | --- | ---: | --- | --- |
@@ -86,7 +86,7 @@ git pull
 sudo bash scripts/repair_pi_hardware.sh
 ```
 
-The script installs SPI/GPIO system packages, refreshes `/opt/ink-cloner`, installs the Python requirements into the service virtual environment, verifies `pigpio`/`RPi.GPIO` imports, prints SPI/GPIO diagnostics, restarts the service, and shows recent logs.
+The script installs SPI/GPIO system packages, refreshes `/opt/ink-cloner`, installs the Python requirements into the service virtual environment, verifies `pigpio` imports, prints SPI/GPIO diagnostics, restarts the service, and shows recent logs.
 
 ## Quick start
 ```bash
@@ -98,7 +98,7 @@ python app.py
 ```
 Open: `http://localhost:5000`
 
-The web UI can still start on a development machine without PN5180 libraries installed; hardware actions will report that the reader is unavailable until either a compatible `pn5180pi` stack or the direct SPI dependencies (`pigpio`, `pigpiod`, and `RPi.GPIO`) are installed and the reader is connected.
+The web UI can still start on a development machine without PN5180 libraries installed; hardware actions will report that the reader is unavailable until either a compatible `pn5180pi` stack or the direct SPI dependencies (`pigpio` and `pigpiod`) are installed and the reader is connected.
 
 ## Configuration
 - `SECRET_KEY` (default `change-me-in-production`)

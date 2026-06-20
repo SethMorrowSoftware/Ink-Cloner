@@ -226,22 +226,29 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(reader.device.frames[0], bytes([0x02, 0xB4, 0x00]) + app.TARGET_UID)
 
 
-    def test_reset_pn5180_hardware_pulses_configured_reset_pin(self):
+    def test_reset_pn5180_hardware_pulses_configured_reset_pin_via_pigpio(self):
         calls = []
-        fake_gpio = SimpleNamespace(
-            BCM='BCM',
-            OUT='OUT',
-            HIGH=1,
-            LOW=0,
-            setmode=lambda mode: calls.append(('setmode', mode)),
-            setup=lambda *args, **kwargs: calls.append(('setup', args, kwargs)),
-            output=lambda *args: calls.append(('output', args)),
-        )
-        with patch.object(app, 'gpio_module', fake_gpio):
+
+        class FakePi:
+            connected = True
+
+            def set_mode(self, *args):
+                calls.append(('set_mode', args))
+
+            def write(self, *args):
+                calls.append(('write', args))
+
+            def stop(self):
+                calls.append(('stop', ()))
+
+        fake_pigpio = SimpleNamespace(OUTPUT='OUTPUT', pi=lambda: FakePi())
+        with patch.object(app, 'pigpio_module', fake_pigpio):
             app.reset_pn5180_hardware()
 
-        self.assertIn(('output', (app.PN5180_RESET_PIN, fake_gpio.LOW)), calls)
-        self.assertIn(('output', (app.PN5180_RESET_PIN, fake_gpio.HIGH)), calls)
+        self.assertIn(('set_mode', (app.PN5180_RESET_PIN, fake_pigpio.OUTPUT)), calls)
+        self.assertIn(('write', (app.PN5180_RESET_PIN, 0)), calls)
+        self.assertIn(('write', (app.PN5180_RESET_PIN, 1)), calls)
+        self.assertIn(('stop', ()), calls)
 
     def test_describe_hardware_error_adds_i2c_guidance(self):
         message = app.describe_hardware_error(ValueError('No I2C device at address: 0x24'))

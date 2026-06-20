@@ -32,7 +32,6 @@ apt-get install -y \
   python3-dev \
   python3-pigpio \
   python3-pip \
-  python3-rpi.gpio \
   python3-venv \
   rsync
 
@@ -65,7 +64,7 @@ if [[ ! -x "$APP_DIR/.venv/bin/python" ]]; then
 fi
 run_as_user "$APP_DIR/.venv/bin/python" -m pip install --upgrade pip
 run_as_user "$APP_DIR/.venv/bin/pip" install --upgrade -r "$APP_DIR/requirements.txt"
-run_as_user "$APP_DIR/.venv/bin/pip" install --upgrade pigpio RPi.GPIO
+run_as_user "$APP_DIR/.venv/bin/pip" install --upgrade pigpio
 
 if [[ ! -f /etc/default/ink-cloner ]]; then
   info "Creating default /etc/default/ink-cloner"
@@ -151,12 +150,11 @@ fi
 info "Verifying Python imports in $APP_DIR/.venv"
 run_as_user "$APP_DIR/.venv/bin/python" - <<'PY'
 import importlib.util
-for name in ("pigpio", "RPi.GPIO", "pn5180pi"):
+for name in ("pigpio", "pn5180pi"):
     spec = importlib.util.find_spec(name)
     print(f"{name}: {spec.origin if spec else 'not installed'}")
 import pigpio
-import RPi.GPIO as GPIO
-print("direct pigpio SPI imports OK")
+print("direct pigpio SPI imports OK; reset uses pigpiod, not /dev/mem")
 PY
 
 info "Restarting service and checking health"
