@@ -151,6 +151,16 @@ ISO15693_FLAG_ADDRESS = 0x20
 ISO15693_CMD_INVENTORY = 0x01
 ISO15693_CMD_WRITE_SINGLE_BLOCK = 0x21
 ISO15693_CMD_WRITE_UID_BACKDOOR = 0xB4
+# In an inventory request bit 6 is the Nb_slots flag: set it to run a single
+# slot, which is the most reliable way to detect one sticker on the antenna.
+ISO15693_FLAG_NB_SLOTS_ONE = 0x20
+
+# PN5180 identity EEPROM addresses (READ_EEPROM opcode 0x07). Reading these back
+# is the standard way to confirm the chip is actually answering on the SPI bus.
+PN5180_EEPROM_DIE_ID = 0x00
+PN5180_EEPROM_PRODUCT_VERSION = 0x10
+PN5180_EEPROM_FIRMWARE_VERSION = 0x12
+PN5180_EEPROM_EEPROM_VERSION = 0x14
 
 reader: Optional['PN5180Iso15693Reader'] = None
 hardware_status = 'Disconnected'
@@ -215,6 +225,31 @@ def utc_now_iso() -> str:
 
 def format_uid(uid: bytes) -> str:
     return '-'.join(f'{byte:02X}' for byte in uid)
+
+
+def format_pn5180_version(value: Optional[bytes]) -> str:
+    """Format a 2-byte PN5180 version EEPROM value as ``major.minor``."""
+    if not value or len(value) < 2:
+        return 'unknown'
+    return f'{value[1]}.{value[0]}'
+
+
+def pn5180_identity_responsive(*values: Optional[bytes]) -> bool:
+    """Return True when an identity read looks like real silicon, not all 0x00/0xFF.
+
+    A PN5180 that is wired and powered returns real version/die bytes. A bus that
+    is mis-wired, unpowered, or held in reset reads back as all zeros or all ones,
+    so those patterns mean "no chip answered" rather than a genuine identity.
+    """
+    for value in values:
+        if not value:
+            continue
+        if all(byte == 0x00 for byte in value):
+            continue
+        if all(byte == 0xFF for byte in value):
+            continue
+        return True
+    return False
 
 
 def normalize_uid(value: Any) -> Optional[bytes]:
@@ -322,6 +357,8 @@ class DirectSpiPN5180Iso15693Reader:
         self._deselect()
         self._hardware_reset()
         self._bytes_in_card_buffer = 0
+        self._last_inventory_response = b''
+        self.self_test: dict[str, Any] = {}
 
     def _hardware_reset(self) -> None:
         self._pi.write(PN5180_RESET_PIN, 0)
@@ -372,6 +409,37 @@ class DirectSpiPN5180Iso15693Reader:
         # Without the 0x00 byte, the chip does not clock out the RF receive buffer.
         return self._read_after_command([0x0A, 0x00], length)
 
+    def _read_eeprom(self, address: int, length: int) -> list[int]:
+        # READ_EEPROM: opcode 0x07 + start address + length, then clock out `length` bytes.
+        return self._read_after_command([0x07, address & 0xFF, length & 0xFF], length)
+
+    def read_self_test(self) -> dict[str, Any]:
+        """Read PN5180 identity EEPROM so operators can confirm SPI comms really work.
+
+        This uses the same SPI read path as every other command, so an all-zero or
+        all-0xFF result is a strong signal that the wiring/power/SPI bus is the
+        problem rather than the RF field or the sticker.
+        """
+        product = bytes(self._read_eeprom(PN5180_EEPROM_PRODUCT_VERSION, 2))
+        firmware = bytes(self._read_eeprom(PN5180_EEPROM_FIRMWARE_VERSION, 2))
+        eeprom = bytes(self._read_eeprom(PN5180_EEPROM_EEPROM_VERSION, 2))
+        die_id = bytes(self._read_eeprom(PN5180_EEPROM_DIE_ID, 16))
+        info: dict[str, Any] = {
+            'product_version': format_pn5180_version(product),
+            'firmware_version': format_pn5180_version(firmware),
+            'eeprom_version': format_pn5180_version(eeprom),
+            'die_id': ''.join(f'{byte:02X}' for byte in die_id),
+            'responsive': pn5180_identity_responsive(product, firmware, eeprom),
+        }
+        self.self_test = info
+        return info
+
+    def last_scan_summary(self) -> str:
+        """Describe the most recent RF response to help diagnose scan timeouts."""
+        if self._last_inventory_response:
+            return 'last RF bytes: ' + '-'.join(f'{byte:02X}' for byte in self._last_inventory_response)
+        return 'no RF bytes received from any sticker (RF field, antenna, or sticker-type issue)'
+
     @staticmethod
     def _rx_status_byte_count(rx_status: list[int]) -> int:
         """Return RX byte count from RX_STATUS bits 0-8."""
@@ -415,29 +483,50 @@ class DirectSpiPN5180Iso15693Reader:
         self._send([0x00, 0x03, 0xFF, 0xFF, 0x0F, 0x00])
         self._send([0x09, 0x00])
 
-    def poll_uid(self) -> Optional[bytes]:
+    def _inventory_round(self, flags: int, slots: int) -> Optional[bytes]:
+        """Run one ISO 15693 inventory of `slots` slots and return the first UID."""
         self._prepare_iso15693()
         self._send([
             0x09,
             0x00,
             # Inventory must be unaddressed: addressed inventory frames require a
             # UID that we do not know yet, so stickers will not answer them.
-            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
+            flags,
             ISO15693_CMD_INVENTORY,
             0x00,
         ])
+        for slot_index in range(slots):
+            if self._card_has_responded():
+                response = bytes(self._read_data(self._bytes_in_card_buffer))
+                self._last_inventory_response = response
+                uid = parse_iso15693_inventory_response(response)
+                if uid:
+                    return uid
+            if slot_index < slots - 1:
+                self._send_inventory_eof()
+        return None
+
+    def poll_uid(self) -> Optional[bytes]:
         try:
-            for slot_index in range(16):
-                if self._card_has_responded():
-                    response = bytes(self._read_data(self._bytes_in_card_buffer))
-                    uid = parse_iso15693_inventory_response(response)
-                    if uid:
-                        return uid
-                if slot_index < 15:
-                    self._send_inventory_eof()
+            # A single sticker on the antenna is detected most reliably with a
+            # one-slot inventory: it removes any dependence on slot/EOF timing,
+            # whereas a lone sticker rarely lands in slot 0 of a 16-slot sweep.
+            single_slot_flags = (
+                ISO15693_FLAG_DATA_RATE_HIGH
+                | ISO15693_FLAG_INVENTORY
+                | ISO15693_FLAG_NB_SLOTS_ONE
+            )
+            try:
+                uid = self._inventory_round(single_slot_flags, 1)
+                if uid:
+                    return uid
+            except RuntimeError:
+                pass  # Fall through to the anticollision sweep on a tag error.
+            # Fall back to the full 16-slot anticollision sweep (multi-tag fields).
+            multi_slot_flags = ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY
+            return self._inventory_round(multi_slot_flags, 16)
         finally:
             self._send([0x17, 0x00])  # RF_OFF
-        return None
 
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         uid = validate_uid(uid)
@@ -600,6 +689,20 @@ def describe_hardware_error(exc: Exception) -> str:
     return message
 
 
+def describe_reader_self_test(active_reader: Any) -> str:
+    """Best-effort PN5180 identity read so 'Connected' means the chip really answered."""
+    read_self_test = getattr(active_reader, 'read_self_test', None)
+    if not callable(read_self_test):
+        return ''
+    try:
+        info = read_self_test()
+    except Exception as exc:
+        return f'identity read failed: {exc}'
+    if info.get('responsive'):
+        return f"PN5180 firmware {info.get('firmware_version', '?')}"
+    return 'PN5180 identity read empty — check SPI wiring, pigpiod, and 3.3V logic power'
+
+
 def initialize_hardware() -> None:
     global reader, hardware_status
     try:
@@ -615,6 +718,9 @@ def initialize_hardware() -> None:
         else:
             reader = DirectSpiPN5180Iso15693Reader()
         hardware_status = f'Connected: {reader.label}'
+        detail = describe_reader_self_test(reader)
+        if detail:
+            hardware_status = f'Connected: {reader.label} — {detail}'
     except Exception as exc:
         reader = None
         hardware_status = f'Error: {describe_hardware_error(exc)}'
@@ -642,6 +748,56 @@ def poll_for_iso15693_tag() -> Optional[bytes]:
     return None
 
 
+def log_scan_diagnostics() -> None:
+    """Explain a scan timeout: distinguish SPI/comms problems from RF/sticker ones."""
+    summary = getattr(reader, 'last_scan_summary', None)
+    if callable(summary):
+        log_to_web(f'   • {summary()}')
+    info = getattr(reader, 'self_test', None)
+    if info and info.get('responsive'):
+        log_to_web(
+            f"   • PN5180 firmware {info.get('firmware_version', '?')} answers on SPI, so this points to the "
+            'RF side: confirm 5V RF power and hold one ISO 15693 / NFC-V sticker flat on the coil.'
+        )
+    elif info:
+        log_to_web('   • PN5180 identity read was empty earlier — run Self-Test; SPI comms may be the real problem.')
+    else:
+        log_to_web('   • Tip: press Self-Test to confirm the PN5180 is actually responding on SPI.')
+
+
+def run_self_test() -> None:
+    if not ensure_reader():
+        record_operation('self_test', 'fail', reason='reader_offline')
+        return
+    read_self_test = getattr(reader, 'read_self_test', None)
+    if not callable(read_self_test):
+        log_to_web('ℹ️ Self-test is only available on the direct-SPI PN5180 backend.')
+        record_operation('self_test', 'skipped', backend=NFC_READER_BACKEND)
+        emit_action_complete('success')
+        return
+    info = read_self_test()
+    log_to_web('🔎 PN5180 SPI self-test:')
+    log_to_web(f"   • Firmware version: {info.get('firmware_version', 'unknown')}")
+    log_to_web(f"   • Product version:  {info.get('product_version', 'unknown')}")
+    log_to_web(f"   • EEPROM version:   {info.get('eeprom_version', 'unknown')}")
+    log_to_web(f"   • DIE ID:           {info.get('die_id', 'unknown')}")
+    if info.get('responsive'):
+        log_to_web(
+            '✅ PN5180 is responding on SPI. If scans still time out, the issue is the RF side: '
+            'confirm 5V RF power and use an ISO 15693 / NFC-V sticker held flat on the coil.'
+        )
+        status = 'success'
+    else:
+        log_to_web(
+            '❌ PN5180 returned an empty identity. SPI comms are not working — recheck '
+            'NSS/BUSY/RESET/MOSI/MISO/SCK wiring, that SPI is enabled, pigpiod is running, '
+            'and that 3.3V logic power is present.'
+        )
+        status = 'fail'
+    record_operation('self_test', status, **info)
+    emit_action_complete(status)
+
+
 def run_tag_scan() -> None:
     if not ensure_reader():
         record_operation('scan_tag', 'fail', reason='reader_offline')
@@ -650,6 +806,7 @@ def run_tag_scan() -> None:
     uid = poll_for_iso15693_tag()
     if not uid:
         log_to_web('❌ No ISO 15693 / NFC-V sticker detected.')
+        log_scan_diagnostics()
         record_operation('scan_tag', 'fail', reason='timeout')
         emit_action_complete('fail')
         return
@@ -663,6 +820,12 @@ def run_reconnect() -> None:
     update_ui_status()
     if reader:
         log_to_web(f'✅ Reconnected to {reader.label}.')
+        info = getattr(reader, 'self_test', None)
+        if info:
+            if info.get('responsive'):
+                log_to_web(f"   • PN5180 self-test OK (firmware {info.get('firmware_version', '?')}).")
+            else:
+                log_to_web('   • ⚠️ PN5180 did not return an identity — SPI comms look wrong; run Self-Test.')
         record_operation('reconnect_reader', 'success')
         emit_action_complete('success')
     else:
@@ -700,6 +863,7 @@ def run_burn_sequence() -> None:
     uid = poll_for_iso15693_tag()
     if not uid:
         log_to_web('❌ Timeout: no NFC-V sticker found.')
+        log_scan_diagnostics()
         record_operation('burn', 'fail', reason='timeout')
         emit_action_complete('fail')
         return
@@ -769,7 +933,12 @@ def favicon():
 
 @app.route('/healthz')
 def healthz():
-    return jsonify({'ok': True, 'hardware_status': hardware_status, 'backend': NFC_READER_BACKEND})
+    return jsonify({
+        'ok': True,
+        'hardware_status': hardware_status,
+        'backend': NFC_READER_BACKEND,
+        'self_test': getattr(reader, 'self_test', None) if reader else None,
+    })
 
 
 @app.route('/history.json')
@@ -788,6 +957,11 @@ def handle_burn():
 @socketio.on('scan_tag')
 def handle_scan_tag():
     socketio.start_background_task(with_lock, run_tag_scan)
+
+
+@socketio.on('self_test')
+def handle_self_test():
+    socketio.start_background_task(with_lock, run_self_test)
 
 
 @socketio.on('reconnect_reader')
