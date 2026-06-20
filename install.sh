@@ -48,8 +48,11 @@ sudo -u "$RUN_USER" "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requir
 sudo -u "$RUN_USER" "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements-pn5180pi.txt" \
   || echo "WARNING: optional pn5180pi not installed; the default direct-spi backend does not require it."
 
-echo "==> Writing environment file"
-cat > /etc/default/ink-cloner <<EOF
+if [[ -f /etc/default/ink-cloner ]]; then
+  echo "==> Keeping existing /etc/default/ink-cloner (operator settings such as PN5180_BUSY_PIN preserved)"
+else
+  echo "==> Writing environment file"
+  cat > /etc/default/ink-cloner <<EOF
 SECRET_KEY=change-me-in-production
 CORS_ALLOWED_ORIGINS=*
 PORT=$PORT
@@ -63,7 +66,8 @@ PN5180_RESPONSE_TIMEOUT_SECONDS=0.25
 ISO15693_BLOCK_SIZE=4
 ENABLE_UID_BACKDOOR=false
 EOF
-chmod 640 /etc/default/ink-cloner
+  chmod 640 /etc/default/ink-cloner
+fi
 
 echo "==> Installing systemd service"
 cat > /etc/systemd/system/$SERVICE_NAME <<EOF
