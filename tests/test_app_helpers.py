@@ -101,7 +101,7 @@ class HelperTests(unittest.TestCase):
 
         self.assertEqual(uid, bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
         self.assertIn([0x09, 0x00, 0x06, 0x01, 0x00], fake_pigpio.pi_instance.transfers)
-        self.assertIn([0x0A], fake_pigpio.pi_instance.transfers)
+        self.assertIn([0x0A, 0x00], fake_pigpio.pi_instance.transfers)
         self.assertIn([0x09, 0x00, 0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04], fake_pigpio.pi_instance.transfers)
 
 
@@ -145,13 +145,18 @@ class HelperTests(unittest.TestCase):
         fake_pigpio = FakePigpioModule()
         with patch.object(app, 'pigpio_module', fake_pigpio):
             reader = app.DirectSpiPN5180Iso15693Reader()
-            reader._read_after_command([0x0A], 1)
+            reader._read_after_command([0x0A, 0x00], 1)
 
         events = fake_pigpio.pi_instance.events
-        command_index = events.index(('xfer', [0x0A]))
+        command_index = events.index(('xfer', [0x0A, 0x00]))
         response_index = events.index(('xfer', [0x00]))
         deselect_index = events.index(('write', app.PN5180_NSS_PIN, 1), command_index)
         self.assertGreater(deselect_index, response_index)
+
+    def test_direct_spi_reader_decodes_rx_status_byte_count_bits(self):
+        self.assertEqual(app.DirectSpiPN5180Iso15693Reader._rx_status_byte_count([0x0A, 0x00, 0x00, 0x00]), 10)
+        self.assertEqual(app.DirectSpiPN5180Iso15693Reader._rx_status_byte_count([0x00, 0x01, 0x00, 0x00]), 256)
+        self.assertEqual(app.DirectSpiPN5180Iso15693Reader._rx_status_byte_count([]), 0)
 
     def test_pn5180_reader_uses_library_iso15693_inventory_when_available(self):
         class FakePn5180:

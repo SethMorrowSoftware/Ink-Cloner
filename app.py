@@ -368,14 +368,25 @@ class DirectSpiPN5180Iso15693Reader:
         return self._read_after_command([0x04, register], 4)
 
     def _read_data(self, length: int) -> list[int]:
-        return self._read_after_command([0x0A], length)
+        # PN5180 READ_DATA has a required dummy parameter byte after opcode 0x0A.
+        # Without the 0x00 byte, the chip does not clock out the RF receive buffer.
+        return self._read_after_command([0x0A, 0x00], length)
+
+    @staticmethod
+    def _rx_status_byte_count(rx_status: list[int]) -> int:
+        """Return RX byte count from RX_STATUS bits 0-8."""
+        if not rx_status:
+            return 0
+        low_byte = rx_status[0]
+        high_bit = (rx_status[1] & 0x01) if len(rx_status) > 1 else 0
+        return low_byte | (high_bit << 8)
 
     def _card_has_responded(self) -> bool:
         deadline = time.monotonic() + PN5180_RESPONSE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             rx_status = self._read_register(0x13)  # RX_STATUS
             self._read_register(0x02)  # IRQ_STATUS
-            self._bytes_in_card_buffer = rx_status[0] if rx_status else 0
+            self._bytes_in_card_buffer = self._rx_status_byte_count(rx_status)
             if self._bytes_in_card_buffer > 0:
                 return True
             time.sleep(0.005)
