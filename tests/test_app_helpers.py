@@ -100,7 +100,8 @@ class HelperTests(unittest.TestCase):
             reader.write_block(uid, 5, bytes([1, 2, 3, 4]))
 
         self.assertEqual(uid, bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
-        self.assertIn([0x09, 0x00, 0x06, 0x01, 0x00], fake_pigpio.pi_instance.transfers)
+        # A single sticker is found with the one-slot inventory (Nb_slots flag 0x20 -> flags 0x26).
+        self.assertIn([0x09, 0x00, 0x26, 0x01, 0x00], fake_pigpio.pi_instance.transfers)
         self.assertIn([0x0A, 0x00], fake_pigpio.pi_instance.transfers)
         self.assertIn([0x09, 0x00, 0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04], fake_pigpio.pi_instance.transfers)
 
@@ -324,6 +325,151 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(response.json['ok'])
         self.assertIn('hardware_status', response.json)
         self.assertIn('backend', response.json)
+        self.assertIn('self_test', response.json)
+
+    def test_format_pn5180_version_orders_major_minor(self):
+        self.assertEqual(app.format_pn5180_version(bytes([0x05, 0x03])), '3.5')
+        self.assertEqual(app.format_pn5180_version(bytes([0x00, 0x04])), '4.0')
+        self.assertEqual(app.format_pn5180_version(b''), 'unknown')
+        self.assertEqual(app.format_pn5180_version(None), 'unknown')
+
+    def test_pn5180_identity_responsive_rejects_blank_reads(self):
+        self.assertFalse(app.pn5180_identity_responsive(bytes([0x00, 0x00]), bytes([0xFF, 0xFF])))
+        self.assertFalse(app.pn5180_identity_responsive(None, b''))
+        self.assertTrue(app.pn5180_identity_responsive(bytes([0x00, 0x00]), bytes([0x05, 0x03])))
+
+    def _build_fake_pigpio(self, reads):
+        class FakePi:
+            connected = True
+
+            def __init__(self):
+                self.transfers = []
+                self.reads = list(reads)
+
+            def spi_open(self, *_args):
+                return 7
+
+            def set_mode(self, *_args):
+                pass
+
+            def write(self, *_args):
+                pass
+
+            def read(self, _pin):
+                return 0
+
+            def spi_xfer(self, _handle, frame):
+                data = list(frame)
+                self.transfers.append(data)
+                if all(byte == 0 for byte in data) and self.reads:
+                    response = self.reads.pop(0)[:len(data)]
+                    return len(response), bytearray(response)
+                return len(data), bytearray(len(data))
+
+        class FakePigpioModule:
+            INPUT = 'INPUT'
+            OUTPUT = 'OUTPUT'
+
+            def __init__(self):
+                self.pi_instance = FakePi()
+
+            def pi(self):
+                return self.pi_instance
+
+        return FakePigpioModule()
+
+    def test_direct_spi_reader_self_test_reads_identity_eeprom(self):
+        fake_pigpio = self._build_fake_pigpio([
+            [0x01, 0x03],        # PRODUCT_VERSION -> 3.1
+            [0x05, 0x03],        # FIRMWARE_VERSION -> 3.5
+            [0x10, 0x00],        # EEPROM_VERSION -> 0.16
+            list(range(16)),     # DIE_ID
+        ])
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            info = reader.read_self_test()
+
+        self.assertEqual(info['firmware_version'], '3.5')
+        self.assertEqual(info['product_version'], '3.1')
+        self.assertEqual(info['eeprom_version'], '0.16')
+        self.assertTrue(info['responsive'])
+        # READ_EEPROM frames: opcode 0x07 + address + length.
+        self.assertIn([0x07, 0x10, 0x02], fake_pigpio.pi_instance.transfers)
+        self.assertIn([0x07, 0x12, 0x02], fake_pigpio.pi_instance.transfers)
+        self.assertIn([0x07, 0x00, 0x10], fake_pigpio.pi_instance.transfers)
+
+    def test_direct_spi_reader_self_test_flags_unresponsive_chip(self):
+        fake_pigpio = self._build_fake_pigpio([])  # every read returns zeros
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            info = reader.read_self_test()
+        self.assertFalse(info['responsive'])
+
+    def test_direct_spi_poll_uid_falls_back_to_anticollision_sweep(self):
+        # No card ever answers; both inventory frames must be issued before giving up.
+        fake_pigpio = self._build_fake_pigpio([])
+        with (
+            patch.object(app, 'pigpio_module', fake_pigpio),
+            patch.object(app, 'PN5180_RESPONSE_TIMEOUT_SECONDS', 0.01),
+        ):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            self.assertIsNone(reader.poll_uid())
+
+        transfers = fake_pigpio.pi_instance.transfers
+        self.assertIn([0x09, 0x00, 0x26, 0x01, 0x00], transfers)  # single-slot inventory
+        self.assertIn([0x09, 0x00, 0x06, 0x01, 0x00], transfers)  # 16-slot anticollision sweep
+
+    def test_describe_reader_self_test_reports_firmware(self):
+        class FakeReader:
+            def read_self_test(self):
+                return {'responsive': True, 'firmware_version': '3.5'}
+
+        self.assertIn('firmware 3.5', app.describe_reader_self_test(FakeReader()))
+
+    def test_describe_reader_self_test_warns_when_identity_empty(self):
+        class FakeReader:
+            def read_self_test(self):
+                return {'responsive': False}
+
+        self.assertIn('check SPI wiring', app.describe_reader_self_test(FakeReader()))
+
+    def test_describe_reader_self_test_ignores_backend_without_support(self):
+        self.assertEqual(app.describe_reader_self_test(object()), '')
+
+    def test_run_self_test_records_responsive_result(self):
+        class FakeReader:
+            label = 'fake'
+
+            def read_self_test(self):
+                return {
+                    'responsive': True,
+                    'firmware_version': '3.5',
+                    'product_version': '3.1',
+                    'eeprom_version': '0.16',
+                    'die_id': '00',
+                }
+
+        with (
+            patch.object(app, 'reader', FakeReader()),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_self_test()
+            self.assertEqual(app.operation_history[-1]['operation'], 'self_test')
+            self.assertEqual(app.operation_history[-1]['status'], 'success')
+
+    def test_run_self_test_reports_failure_for_unresponsive_chip(self):
+        class FakeReader:
+            label = 'fake'
+
+            def read_self_test(self):
+                return {'responsive': False, 'firmware_version': 'unknown'}
+
+        with (
+            patch.object(app, 'reader', FakeReader()),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_self_test()
+            self.assertEqual(app.operation_history[-1]['status'], 'fail')
 
 
 if __name__ == '__main__':

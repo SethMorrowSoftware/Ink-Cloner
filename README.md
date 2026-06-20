@@ -5,9 +5,11 @@ Professional Flask + Socket.IO **PN5180** console with **ink cloning as the prim
 ## Core focus
 - Guided **Ink Clone Burn** workflow with step-by-step console logs and completion status.
 - PN5180-first NFC-V UID scan and ISO 15693 block writes.
+- **PN5180 Self-Test** that reads the chip's firmware/product/EEPROM identity so you can tell a wiring/SPI problem apart from an RF/sticker problem.
+- Single-slot ISO 15693 inventory for reliable detection of one sticker on the antenna, with a 16-slot anticollision fallback.
 - Reader reconnect controls and live hardware status.
 - Operation history/audit export at `/history.json`.
-- Health check endpoint at `/healthz`.
+- Health check endpoint at `/healthz` (includes the latest self-test identity).
 - Safer default behavior: UID backdoor writes are disabled unless explicitly enabled with `ENABLE_UID_BACKDOOR=true`.
 
 ## PN5180 setup for Raspberry Pi Zero / Zero W / Zero 2 W on Bookworm Lite
@@ -52,11 +54,14 @@ The environment variables still use **BCM GPIO numbers** because `pigpio` addres
 
 If the web UI says the PN5180 is connected but scans time out:
 
-1. Confirm the sticker is an **ISO 15693 / NFC-V** sticker. MIFARE/ISO 14443 stickers are a different protocol and will not respond to this workflow.
-2. Put only one sticker on the antenna and hold it flat in the center of the PN5180 coil.
-3. Confirm 5V is connected to the PN5180 RF power pin and 3.3V is connected to the logic/IO pin when your module exposes both.
-4. Confirm SPI devices exist after reboot: `ls -l /dev/spidev0.*`.
-5. Force the known-good path in `/etc/default/ink-cloner`: `PN5180_BACKEND=direct-spi`.
+1. **Press Self-Test first.** The badge shows "Online" as soon as `pigpiod` opens the SPI bus, *before* the chip has answered anything, so it is not proof the PN5180 is wired correctly. Self-Test reads the chip's firmware/product/EEPROM identity:
+   - If Self-Test reports a real firmware version, SPI comms work and the problem is on the **RF side** (continue with steps 2–3).
+   - If Self-Test reports an empty identity, SPI comms are **not** working: recheck NSS/BUSY/RESET/MOSI/MISO/SCK wiring, that SPI is enabled, `pigpiod` is running, and that 3.3V logic power is present.
+2. Confirm the sticker is an **ISO 15693 / NFC-V** sticker. MIFARE/ISO 14443 stickers are a different protocol and will not respond to this workflow.
+3. Put only one sticker on the antenna and hold it flat in the center of the PN5180 coil.
+4. Confirm 5V is connected to the PN5180 RF power pin and 3.3V is connected to the logic/IO pin when your module exposes both. SPI/Self-Test can pass on 3.3V alone, but the RF field needs 5V to power the sticker.
+5. Confirm SPI devices exist after reboot: `ls -l /dev/spidev0.*`.
+6. Force the known-good path in `/etc/default/ink-cloner`: `PN5180_BACKEND=direct-spi`.
 
 
 ## Troubleshooting
