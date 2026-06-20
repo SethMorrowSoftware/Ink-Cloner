@@ -32,7 +32,6 @@ apt-get install -y \
   python3-dev \
   python3-pigpio \
   python3-pip \
-  python3-rpi.gpio \
   python3-venv \
   rsync
 
@@ -65,7 +64,7 @@ if [[ ! -x "$APP_DIR/.venv/bin/python" ]]; then
 fi
 run_as_user "$APP_DIR/.venv/bin/python" -m pip install --upgrade pip
 run_as_user "$APP_DIR/.venv/bin/pip" install --upgrade -r "$APP_DIR/requirements.txt"
-run_as_user "$APP_DIR/.venv/bin/pip" install --upgrade pigpio RPi.GPIO
+run_as_user "$APP_DIR/.venv/bin/pip" install --upgrade pigpio
 
 if [[ ! -f /etc/default/ink-cloner ]]; then
   info "Creating default /etc/default/ink-cloner"
@@ -78,7 +77,7 @@ TAG_DETECTION_POLL_SECONDS=0.2
 PN5180_NSS_PIN=8
 PN5180_BUSY_PIN=24
 PN5180_RESET_PIN=23
-PN5180_BACKEND=auto
+PN5180_BACKEND=direct-spi
 PN5180_RESPONSE_TIMEOUT_SECONDS=0.25
 ISO15693_BLOCK_SIZE=4
 ENABLE_UID_BACKDOOR=false
@@ -87,11 +86,11 @@ ENVEOF
 fi
 
 
-info "Ensuring service backend defaults to auto"
+info "Ensuring service backend defaults to direct-spi"
 if grep -q '^PN5180_BACKEND=' /etc/default/ink-cloner; then
-  sed -i 's/^PN5180_BACKEND=.*/PN5180_BACKEND=auto/' /etc/default/ink-cloner
+  sed -i 's/^PN5180_BACKEND=.*/PN5180_BACKEND=direct-spi/' /etc/default/ink-cloner
 else
-  echo 'PN5180_BACKEND=auto' >> /etc/default/ink-cloner
+  echo 'PN5180_BACKEND=direct-spi' >> /etc/default/ink-cloner
 fi
 
 if [[ ! -f /etc/systemd/system/$SERVICE_NAME ]]; then
@@ -151,12 +150,11 @@ fi
 info "Verifying Python imports in $APP_DIR/.venv"
 run_as_user "$APP_DIR/.venv/bin/python" - <<'PY'
 import importlib.util
-for name in ("pigpio", "RPi.GPIO", "pn5180pi"):
+for name in ("pigpio", "pn5180pi"):
     spec = importlib.util.find_spec(name)
     print(f"{name}: {spec.origin if spec else 'not installed'}")
 import pigpio
-import RPi.GPIO as GPIO
-print("direct pigpio SPI imports OK")
+print("direct pigpio SPI imports OK; reset uses pigpiod, not /dev/mem")
 PY
 
 info "Restarting service and checking health"
