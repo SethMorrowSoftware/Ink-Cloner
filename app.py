@@ -78,7 +78,6 @@ else:
 
 pn5180pi_module = _optional_module('pn5180pi')
 pigpio_module = _optional_module('pigpio')
-gpio_module = _optional_module('RPi.GPIO')
 
 
 def resolve_pn5180_class(module: Any) -> Any:
@@ -143,7 +142,7 @@ PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
 ENABLE_UID_BACKDOOR = os.getenv('ENABLE_UID_BACKDOOR', 'false').lower() in {'1', 'true', 'yes', 'on'}
-PN5180_BACKEND = os.getenv('PN5180_BACKEND', 'auto').lower()
+PN5180_BACKEND = os.getenv('PN5180_BACKEND', 'direct-spi').lower()
 NFC_READER_BACKEND = PN5180_BACKEND
 
 ISO15693_FLAG_DATA_RATE_HIGH = 0x02
@@ -410,7 +409,9 @@ class DirectSpiPN5180Iso15693Reader:
         self._send([
             0x09,
             0x00,
-            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY | ISO15693_FLAG_ADDRESS,
+            # Inventory must be unaddressed: addressed inventory frames require a
+            # UID that we do not know yet, so stickers will not answer them.
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
             ISO15693_CMD_INVENTORY,
             0x00,
         ])
@@ -501,6 +502,7 @@ class PN5180Iso15693Reader:
                 response = response[0]
             return parse_iso15693_uid(response)
         frame = bytes([
+            # Inventory must be unaddressed; use addressed mode only after UID discovery.
             ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
             ISO15693_CMD_INVENTORY,
             0x00,  # mask length
@@ -550,15 +552,24 @@ def record_operation(name: str, operation_status: str, **details: Any) -> None:
 
 
 def reset_pn5180_hardware() -> None:
-    """Pulse the PN5180 reset pin before constructing a backend driver."""
-    if gpio_module is None:
+    """Pulse the PN5180 reset pin through pigpiod without requiring /dev/mem/root."""
+    if pigpio_module is None:
         return
-    gpio_module.setmode(gpio_module.BCM)
-    gpio_module.setup(PN5180_RESET_PIN, gpio_module.OUT, initial=gpio_module.HIGH)
-    gpio_module.output(PN5180_RESET_PIN, gpio_module.LOW)
-    time.sleep(0.1)
-    gpio_module.output(PN5180_RESET_PIN, gpio_module.HIGH)
-    time.sleep(0.1)
+    pi = pigpio_module.pi()
+    if not getattr(pi, 'connected', True):
+        return
+    try:
+        pi.set_mode(PN5180_RESET_PIN, pigpio_module.OUTPUT)
+        pi.write(PN5180_RESET_PIN, 1)
+        time.sleep(0.01)
+        pi.write(PN5180_RESET_PIN, 0)
+        time.sleep(0.1)
+        pi.write(PN5180_RESET_PIN, 1)
+        time.sleep(0.1)
+    finally:
+        stop = getattr(pi, 'stop', None)
+        if callable(stop):
+            stop()
 
 
 def describe_hardware_error(exc: Exception) -> str:
@@ -584,7 +595,11 @@ def initialize_hardware() -> None:
         reset_pn5180_hardware()
         if PN5180_BACKEND == 'direct-spi':
             reader = DirectSpiPN5180Iso15693Reader()
+        elif PN5180_BACKEND == 'pn5180pi':
+            reader = PN5180Iso15693Reader()
         elif PN5180_CLASS is not None:
+            # Auto mode preserves compatibility, but production Pi installs default to direct-spi
+            # to avoid accidentally selecting PN532/I2C-style helper libraries.
             reader = PN5180Iso15693Reader()
         else:
             reader = DirectSpiPN5180Iso15693Reader()

@@ -100,7 +100,7 @@ class HelperTests(unittest.TestCase):
             reader.write_block(uid, 5, bytes([1, 2, 3, 4]))
 
         self.assertEqual(uid, bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
-        self.assertIn([0x09, 0x00, 0x26, 0x01, 0x00], fake_pigpio.pi_instance.transfers)
+        self.assertIn([0x09, 0x00, 0x06, 0x01, 0x00], fake_pigpio.pi_instance.transfers)
         self.assertIn([0x0A], fake_pigpio.pi_instance.transfers)
         self.assertIn([0x09, 0x00, 0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04], fake_pigpio.pi_instance.transfers)
 
@@ -226,22 +226,29 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(reader.device.frames[0], bytes([0x02, 0xB4, 0x00]) + app.TARGET_UID)
 
 
-    def test_reset_pn5180_hardware_pulses_configured_reset_pin(self):
+    def test_reset_pn5180_hardware_pulses_configured_reset_pin_via_pigpio(self):
         calls = []
-        fake_gpio = SimpleNamespace(
-            BCM='BCM',
-            OUT='OUT',
-            HIGH=1,
-            LOW=0,
-            setmode=lambda mode: calls.append(('setmode', mode)),
-            setup=lambda *args, **kwargs: calls.append(('setup', args, kwargs)),
-            output=lambda *args: calls.append(('output', args)),
-        )
-        with patch.object(app, 'gpio_module', fake_gpio):
+
+        class FakePi:
+            connected = True
+
+            def set_mode(self, *args):
+                calls.append(('set_mode', args))
+
+            def write(self, *args):
+                calls.append(('write', args))
+
+            def stop(self):
+                calls.append(('stop', ()))
+
+        fake_pigpio = SimpleNamespace(OUTPUT='OUTPUT', pi=lambda: FakePi())
+        with patch.object(app, 'pigpio_module', fake_pigpio):
             app.reset_pn5180_hardware()
 
-        self.assertIn(('output', (app.PN5180_RESET_PIN, fake_gpio.LOW)), calls)
-        self.assertIn(('output', (app.PN5180_RESET_PIN, fake_gpio.HIGH)), calls)
+        self.assertIn(('set_mode', (app.PN5180_RESET_PIN, fake_pigpio.OUTPUT)), calls)
+        self.assertIn(('write', (app.PN5180_RESET_PIN, 0)), calls)
+        self.assertIn(('write', (app.PN5180_RESET_PIN, 1)), calls)
+        self.assertIn(('stop', ()), calls)
 
     def test_describe_hardware_error_adds_i2c_guidance(self):
         message = app.describe_hardware_error(ValueError('No I2C device at address: 0x24'))
@@ -249,16 +256,16 @@ class HelperTests(unittest.TestCase):
         self.assertIn('pigpiod is running', message)
 
     def test_backend_name_is_defined_for_routes_and_history(self):
-        self.assertEqual(app.NFC_READER_BACKEND, 'auto')
+        self.assertEqual(app.NFC_READER_BACKEND, 'direct-spi')
 
 
 
-    def test_initialize_hardware_falls_back_to_direct_spi_when_pn5180pi_has_no_class(self):
+    def test_initialize_hardware_auto_falls_back_to_direct_spi_when_pn5180pi_has_no_class(self):
         class FakeDirectReader:
             label = 'fake direct fallback'
 
         with (
-            patch.object(app, 'PN5180_BACKEND', 'pn5180pi'),
+            patch.object(app, 'PN5180_BACKEND', 'auto'),
             patch.object(app, 'PN5180_CLASS', None),
             patch.object(app, 'DirectSpiPN5180Iso15693Reader', FakeDirectReader),
         ):
