@@ -338,7 +338,7 @@ class HelperTests(unittest.TestCase):
         self.assertFalse(app.pn5180_identity_responsive(None, b''))
         self.assertTrue(app.pn5180_identity_responsive(bytes([0x00, 0x00]), bytes([0x05, 0x03])))
 
-    def _build_fake_pigpio(self, reads):
+    def _build_fake_pigpio(self, reads, busy_value=0):
         class FakePi:
             connected = True
 
@@ -356,7 +356,7 @@ class HelperTests(unittest.TestCase):
                 pass
 
             def read(self, _pin):
-                return 0
+                return busy_value
 
             def spi_xfer(self, _handle, frame):
                 data = list(frame)
@@ -435,6 +435,28 @@ class HelperTests(unittest.TestCase):
 
     def test_describe_reader_self_test_ignores_backend_without_support(self):
         self.assertEqual(app.describe_reader_self_test(object()), '')
+
+    def test_wait_ready_times_out_when_busy_stuck_high(self):
+        fake_pigpio = self._build_fake_pigpio([], busy_value=1)
+        with (
+            patch.object(app, 'pigpio_module', fake_pigpio),
+            patch.object(app, 'PN5180_BUSY_TIMEOUT_SECONDS', 0.05),
+        ):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            with self.assertRaises(RuntimeError):
+                reader._wait_ready()
+
+    def test_describe_reader_self_test_survives_busy_timeout(self):
+        # A stuck BUSY line must not hang startup: self-test fails gracefully so
+        # initialize_hardware can still reach socketio.run and serve the UI.
+        fake_pigpio = self._build_fake_pigpio([], busy_value=1)
+        with (
+            patch.object(app, 'pigpio_module', fake_pigpio),
+            patch.object(app, 'PN5180_BUSY_TIMEOUT_SECONDS', 0.05),
+        ):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            detail = app.describe_reader_self_test(reader)
+        self.assertIn('identity read failed', detail)
 
     def test_run_self_test_records_responsive_result(self):
         class FakeReader:

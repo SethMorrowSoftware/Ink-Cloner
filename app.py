@@ -138,6 +138,7 @@ TAG_DETECTION_TIMEOUT_SECONDS = env_float('TAG_DETECTION_TIMEOUT_SECONDS', 15.0,
 TAG_DETECTION_POLL_SECONDS = env_float('TAG_DETECTION_POLL_SECONDS', 0.2, minimum=0.05)
 ISO15693_BLOCK_SIZE = env_int('ISO15693_BLOCK_SIZE', 4, minimum=1)
 PN5180_RESPONSE_TIMEOUT_SECONDS = env_float('PN5180_RESPONSE_TIMEOUT_SECONDS', 0.25, minimum=0.01)
+PN5180_BUSY_TIMEOUT_SECONDS = env_float('PN5180_BUSY_TIMEOUT_SECONDS', 1.0, minimum=0.05)
 PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
@@ -367,7 +368,16 @@ class DirectSpiPN5180Iso15693Reader:
         time.sleep(0.02)
 
     def _wait_ready(self) -> None:
+        # Bounded so a stuck/floating BUSY line (unpowered or mis-wired PN5180)
+        # can never hang startup or a scan in an infinite loop; it surfaces as a
+        # clear error instead.
+        deadline = time.monotonic() + PN5180_BUSY_TIMEOUT_SECONDS
         while self._pi.read(PN5180_BUSY_PIN):
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f'PN5180 BUSY (GPIO {PN5180_BUSY_PIN}) stuck high for '
+                    f'{PN5180_BUSY_TIMEOUT_SECONDS:g}s; check 3.3V/5V power and BUSY/SPI wiring'
+                )
             time.sleep(0.0001)
 
     def _select(self) -> None:
@@ -775,7 +785,13 @@ def run_self_test() -> None:
         record_operation('self_test', 'skipped', backend=NFC_READER_BACKEND)
         emit_action_complete('success')
         return
-    info = read_self_test()
+    try:
+        info = read_self_test()
+    except Exception as exc:
+        log_to_web(f'❌ PN5180 self-test could not read the chip: {exc}')
+        record_operation('self_test', 'fail', error=str(exc))
+        emit_action_complete('fail')
+        return
     log_to_web('🔎 PN5180 SPI self-test:')
     log_to_web(f"   • Firmware version: {info.get('firmware_version', 'unknown')}")
     log_to_web(f"   • Product version:  {info.get('product_version', 'unknown')}")
