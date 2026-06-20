@@ -100,7 +100,7 @@ class HelperTests(unittest.TestCase):
             reader.write_block(uid, 5, bytes([1, 2, 3, 4]))
 
         self.assertEqual(uid, bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32]))
-        self.assertIn([0x09, 0x00, 0x26, 0x01, 0x00], fake_pigpio.pi_instance.transfers)
+        self.assertIn([0x09, 0x00, 0x06, 0x01, 0x00], fake_pigpio.pi_instance.transfers)
         self.assertIn([0x0A], fake_pigpio.pi_instance.transfers)
         self.assertIn([0x09, 0x00, 0x22, 0x21, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0, 0x05, 0x01, 0x02, 0x03, 0x04], fake_pigpio.pi_instance.transfers)
 
@@ -249,16 +249,16 @@ class HelperTests(unittest.TestCase):
         self.assertIn('pigpiod is running', message)
 
     def test_backend_name_is_defined_for_routes_and_history(self):
-        self.assertEqual(app.NFC_READER_BACKEND, 'auto')
+        self.assertEqual(app.NFC_READER_BACKEND, 'direct-spi')
 
 
 
-    def test_initialize_hardware_falls_back_to_direct_spi_when_pn5180pi_has_no_class(self):
+    def test_initialize_hardware_auto_falls_back_to_direct_spi_when_pn5180pi_has_no_class(self):
         class FakeDirectReader:
             label = 'fake direct fallback'
 
         with (
-            patch.object(app, 'PN5180_BACKEND', 'pn5180pi'),
+            patch.object(app, 'PN5180_BACKEND', 'auto'),
             patch.object(app, 'PN5180_CLASS', None),
             patch.object(app, 'DirectSpiPN5180Iso15693Reader', FakeDirectReader),
         ):

@@ -143,7 +143,7 @@ PN5180_NSS_PIN = env_int('PN5180_NSS_PIN', 8, minimum=0)
 PN5180_BUSY_PIN = env_int('PN5180_BUSY_PIN', 24, minimum=0)
 PN5180_RESET_PIN = env_int('PN5180_RESET_PIN', 23, minimum=0)
 ENABLE_UID_BACKDOOR = os.getenv('ENABLE_UID_BACKDOOR', 'false').lower() in {'1', 'true', 'yes', 'on'}
-PN5180_BACKEND = os.getenv('PN5180_BACKEND', 'auto').lower()
+PN5180_BACKEND = os.getenv('PN5180_BACKEND', 'direct-spi').lower()
 NFC_READER_BACKEND = PN5180_BACKEND
 
 ISO15693_FLAG_DATA_RATE_HIGH = 0x02
@@ -410,7 +410,9 @@ class DirectSpiPN5180Iso15693Reader:
         self._send([
             0x09,
             0x00,
-            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY | ISO15693_FLAG_ADDRESS,
+            # Inventory must be unaddressed: addressed inventory frames require a
+            # UID that we do not know yet, so stickers will not answer them.
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
             ISO15693_CMD_INVENTORY,
             0x00,
         ])
@@ -501,6 +503,7 @@ class PN5180Iso15693Reader:
                 response = response[0]
             return parse_iso15693_uid(response)
         frame = bytes([
+            # Inventory must be unaddressed; use addressed mode only after UID discovery.
             ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_INVENTORY,
             ISO15693_CMD_INVENTORY,
             0x00,  # mask length
@@ -584,7 +587,11 @@ def initialize_hardware() -> None:
         reset_pn5180_hardware()
         if PN5180_BACKEND == 'direct-spi':
             reader = DirectSpiPN5180Iso15693Reader()
+        elif PN5180_BACKEND == 'pn5180pi':
+            reader = PN5180Iso15693Reader()
         elif PN5180_CLASS is not None:
+            # Auto mode preserves compatibility, but production Pi installs default to direct-spi
+            # to avoid accidentally selecting PN532/I2C-style helper libraries.
             reader = PN5180Iso15693Reader()
         else:
             reader = DirectSpiPN5180Iso15693Reader()
