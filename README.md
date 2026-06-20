@@ -10,35 +10,53 @@ Professional Flask + Socket.IO **PN5180** console with **ink cloning as the prim
 - Health check endpoint at `/healthz`.
 - Safer default behavior: UID backdoor writes are disabled unless explicitly enabled with `ENABLE_UID_BACKDOOR=true`.
 
-## PN5180 setup
+## PN5180 setup for Raspberry Pi Zero / Zero W / Zero 2 W on Bookworm Lite
 
-The app defaults to `PN5180_BACKEND=auto`: it uses a compatible `pn5180pi` driver when that package exports one, otherwise it falls back to the built-in direct SPI transport.
+The app defaults to `PN5180_BACKEND=direct-spi` so the Pi talks to a **PN5180 SPI module directly** through `pigpio`. This avoids accidentally selecting unrelated PN532/I2C-style Python stacks, which is a common reason the app starts but never sees ISO 15693 / NFC-V stickers.
 
-Use this when the PN5180 module is wired directly to the Pi SPI bus plus NSS, BUSY, and RESET GPIO lines.
+Use this when the PN5180 module is wired directly to the Pi SPI0 bus plus NSS, BUSY, and RESET GPIO lines.
 
 ```bash
+sudo apt update
+sudo apt install -y pigpio python3-pigpio python3-rpi.gpio python3-venv
+sudo raspi-config nonint do_spi 0
 sudo systemctl enable --now pigpiod
 export PN5180_NSS_PIN=8
 export PN5180_BUSY_PIN=24
 export PN5180_RESET_PIN=23
+export PN5180_BACKEND=direct-spi
 python app.py
 ```
 
-Default wiring assumptions use Raspberry Pi BCM GPIO numbers:
+### Wiring diagram using regular Raspberry Pi physical pin numbers
 
-| PN5180 pin | Raspberry Pi connection |
-| --- | --- |
-| 5V | 5V power for RF field |
-| 3.3V | 3.3V logic power |
-| GND | GND |
-| NSS/SSEL | GPIO 8 / CE0 |
-| BUSY | GPIO 24 |
-| RST | GPIO 23 |
-| MOSI | GPIO 10 / SPI0 MOSI |
-| MISO | GPIO 9 / SPI0 MISO |
-| SCK | GPIO 11 / SPI0 SCLK |
+The environment variables still use **BCM GPIO numbers** because `pigpio` and `RPi.GPIO` address pins that way. The wiring table below gives the normal Raspberry Pi header pin numbers first, which are the pin numbers printed in most Pi Zero wiring diagrams.
+
+| PN5180 module pin | Raspberry Pi physical header pin | BCM GPIO / Pi function | App setting |
+| --- | ---: | --- | --- |
+| 5V / VCC | Pin 2 or 4 | 5V power for RF field | — |
+| 3.3V / VCC_IO | Pin 1 or 17 | 3.3V logic power | — |
+| GND | Pin 6, 9, 14, 20, 25, 30, 34, or 39 | Ground | — |
+| NSS / SSEL / CS | Pin 24 | GPIO 8 / SPI0 CE0 | `PN5180_NSS_PIN=8` |
+| BUSY | Pin 18 | GPIO 24 | `PN5180_BUSY_PIN=24` |
+| RST / RESET | Pin 16 | GPIO 23 | `PN5180_RESET_PIN=23` |
+| MOSI | Pin 19 | GPIO 10 / SPI0 MOSI | fixed SPI0 |
+| MISO | Pin 21 | GPIO 9 / SPI0 MISO | fixed SPI0 |
+| SCK / CLK | Pin 23 | GPIO 11 / SPI0 SCLK | fixed SPI0 |
 
 > Important: many PN5180 boards require both 3.3V and 5V connected. SPI can appear alive with only 3.3V, but the antenna/RF field will not reliably power NFC-V stickers without 5V.
+
+> Pi Zero note: the 40-pin header pinout is the same across Raspberry Pi Zero models. Bookworm Lite works with this project when SPI is enabled, `pigpiod` is running, and the service user is in the `spi` and `gpio` groups. Reboot once after enabling SPI or changing groups.
+
+### Sticker detection checklist
+
+If the web UI says the PN5180 is connected but scans time out:
+
+1. Confirm the sticker is an **ISO 15693 / NFC-V** sticker. MIFARE/ISO 14443 stickers are a different protocol and will not respond to this workflow.
+2. Put only one sticker on the antenna and hold it flat in the center of the PN5180 coil.
+3. Confirm 5V is connected to the PN5180 RF power pin and 3.3V is connected to the logic/IO pin when your module exposes both.
+4. Confirm SPI devices exist after reboot: `ls -l /dev/spidev0.*`.
+5. Force the known-good path in `/etc/default/ink-cloner`: `PN5180_BACKEND=direct-spi`.
 
 
 ## Troubleshooting
@@ -86,7 +104,7 @@ The web UI can still start on a development machine without PN5180 libraries ins
 - `SECRET_KEY` (default `change-me-in-production`)
 - `CORS_ALLOWED_ORIGINS` (default `*`)
 - `PORT` (default `5000`)
-- `PN5180_BACKEND` (default `auto`; use `pn5180pi` to force the library wrapper or `direct-spi` to force the built-in SPI transport)
+- `PN5180_BACKEND` (default `direct-spi`; use `auto` or `pn5180pi` only if you intentionally want the optional library wrapper)
 - `PN5180_NSS_PIN` (default `8`, BCM numbering for direct PN5180 boards)
 - `PN5180_BUSY_PIN` (default `24`, BCM numbering for direct PN5180 boards)
   - The pyPN5180 Raspberry Pi examples use GPIO 25 as BUSY; set `PN5180_BUSY_PIN=25` if you followed that wiring.
