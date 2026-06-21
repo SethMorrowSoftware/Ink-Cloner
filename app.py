@@ -402,11 +402,20 @@ class DirectSpiPN5180Iso15693Reader:
         self._wait_ready()
 
     def _read_after_command(self, command: list[int], length: int) -> list[int]:
+        # PN5180 framing: the command and its response are two separate NSS frames.
+        # Send the command, raise NSS to end the frame, then wait for BUSY to drop
+        # (response ready) with NSS high, and finally clock the response in a new
+        # frame. Holding NSS low across the BUSY wait keeps the chip from completing
+        # the command, so BUSY never clears and the read hangs.
         self._wait_ready()
         self._select()
         try:
             self._spi_xfer(command)
-            self._wait_ready()
+        finally:
+            self._deselect()
+        self._wait_ready()
+        self._select()
+        try:
             return self._spi_xfer([0x00] * length)
         finally:
             self._deselect()

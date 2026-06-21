@@ -107,13 +107,14 @@ class HelperTests(unittest.TestCase):
 
 
 
-    def test_direct_spi_reader_keeps_chip_select_active_during_busy_wait_before_read(self):
+    def test_direct_spi_reader_toggles_nss_between_command_and_response(self):
+        # PN5180 framing: NSS must rise after the command (ending that frame) and
+        # the BUSY wait happens with NSS high, then NSS falls again for the response.
         class FakePi:
             connected = True
 
             def __init__(self):
                 self.events = []
-                self.busy_reads = [1, 0]
 
             def spi_open(self, _channel, _baud, _flags):
                 return 7
@@ -122,11 +123,11 @@ class HelperTests(unittest.TestCase):
                 pass
 
             def write(self, pin, value):
-                self.events.append(('write', pin, value))
+                if pin == app.PN5180_NSS_PIN:
+                    self.events.append(('nss', value))
 
-            def read(self, pin):
-                self.events.append(('read', pin))
-                return self.busy_reads.pop(0) if self.busy_reads else 0
+            def read(self, _pin):
+                return 0  # BUSY always ready
 
             def spi_xfer(self, _handle, frame):
                 data = list(frame)
@@ -146,13 +147,68 @@ class HelperTests(unittest.TestCase):
         fake_pigpio = FakePigpioModule()
         with patch.object(app, 'pigpio_module', fake_pigpio):
             reader = app.DirectSpiPN5180Iso15693Reader()
+            fake_pigpio.pi_instance.events.clear()  # drop reset/init writes
             reader._read_after_command([0x0A, 0x00], 1)
 
-        events = fake_pigpio.pi_instance.events
-        command_index = events.index(('xfer', [0x0A, 0x00]))
-        response_index = events.index(('xfer', [0x00]))
-        deselect_index = events.index(('write', app.PN5180_NSS_PIN, 1), command_index)
-        self.assertGreater(deselect_index, response_index)
+        self.assertEqual(fake_pigpio.pi_instance.events, [
+            ('nss', 0),            # select for command frame
+            ('xfer', [0x0A, 0x00]),
+            ('nss', 1),            # raise NSS to end command frame (BUSY wait here)
+            ('nss', 0),            # select again for response frame
+            ('xfer', [0x00]),
+            ('nss', 1),            # end response frame
+        ])
+
+    def test_direct_spi_read_completes_when_busy_clears_after_nss_high(self):
+        # Models real PN5180 behavior: BUSY is asserted while selected and only
+        # clears once NSS is raised. The old single-frame read hung here forever.
+        class FakePi:
+            connected = True
+
+            def __init__(self):
+                self.nss = 1
+                self.busy = False
+
+            def spi_open(self, *_args):
+                return 7
+
+            def set_mode(self, *_args):
+                pass
+
+            def write(self, pin, value):
+                if pin == app.PN5180_NSS_PIN:
+                    self.nss = value
+                    if value == 1:      # frame ended -> chip completes, BUSY clears
+                        self.busy = False
+
+            def read(self, _pin):
+                return 1 if self.busy else 0
+
+            def spi_xfer(self, _handle, frame):
+                if self.nss == 0:       # clocking while selected raises BUSY
+                    self.busy = True
+                return len(frame), bytearray(len(frame))
+
+        class FakePigpioModule:
+            INPUT = 'INPUT'
+            OUTPUT = 'OUTPUT'
+
+            def __init__(self):
+                self.pi_instance = FakePi()
+
+            def pi(self):
+                return self.pi_instance
+
+        fake_pigpio = FakePigpioModule()
+        with (
+            patch.object(app, 'pigpio_module', fake_pigpio),
+            patch.object(app, 'PN5180_BUSY_TIMEOUT_SECONDS', 0.2),
+        ):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            result = reader._read_after_command([0x0A, 0x00], 1)
+
+        self.assertEqual(result, [0x00])
+
 
     def test_direct_spi_reader_decodes_rx_status_byte_count_bits(self):
         self.assertEqual(app.DirectSpiPN5180Iso15693Reader._rx_status_byte_count([0x0A, 0x00, 0x00, 0x00]), 10)
