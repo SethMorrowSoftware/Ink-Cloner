@@ -1021,6 +1021,24 @@ class HelperTests(unittest.TestCase):
         self.assertIn([0x09, 0x00, 0x93, 0x20], transfers)                 # anticollision CL1
         self.assertIn([0x09, 0x00, 0x93, 0x70, 0xDE, 0xAD, 0xBE, 0xEF, 0x22], transfers)  # SELECT CL1
 
+    def test_direct_spi_wake_iso14443a_retries_missed_first_reqa(self):
+        fake_pigpio = self._build_fake_pigpio([])
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            calls = []
+            responses = [b'', bytes([0x04, 0x00])]  # first REQA missed, second answers
+
+            def fake_exchange(frame, last_byte_bits=0):
+                calls.append((list(frame), last_byte_bits))
+                return responses[len(calls) - 1] if len(calls) <= len(responses) else b''
+
+            reader._exchange_14443 = fake_exchange
+            atqa = reader._wake_iso14443a(0x26)
+
+        self.assertEqual(atqa, bytes([0x04, 0x00]))
+        self.assertEqual(len(calls), 2)               # retried once after the miss
+        self.assertEqual(calls[0], ([0x26], 7))       # REQA sent as a 7-bit short frame
+
     def test_run_identify_reports_protocols(self):
         class FakeReader:
             label = 'fake'
