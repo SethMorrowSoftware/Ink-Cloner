@@ -168,6 +168,14 @@ RF_CONFIG_ISO14443A_106 = (0x00, 0x80)
 # PN5180 CRC config registers (bit 0 enables CRC).
 PN5180_REG_CRC_RX_CONFIG = 0x12
 PN5180_REG_CRC_TX_CONFIG = 0x19
+
+# Common factory/default MIFARE Classic keys, tried per sector during a dump.
+MIFARE_DEFAULT_KEYS = [
+    bytes.fromhex('FFFFFFFFFFFF'),
+    bytes.fromhex('A0A1A2A3A4A5'),
+    bytes.fromhex('D3F7D3F7D3F7'),
+    bytes.fromhex('000000000000'),
+]
 # In an inventory request bit 6 is the Nb_slots flag: set it to run a single
 # slot, which is the most reliable way to detect one sticker on the antenna.
 ISO15693_FLAG_NB_SLOTS_ONE = 0x20
@@ -762,44 +770,98 @@ class DirectSpiPN5180Iso15693Reader:
             return bytes(self._read_data(self._bytes_in_card_buffer))
         return b''
 
+    def _activate_iso14443a(self, wakeup: int = 0x26) -> Optional[dict[str, Any]]:
+        """REQA/WUPA -> anticollision -> SELECT (with cascade). Returns raw uid/atqa/sak."""
+        self._set_crc(PN5180_REG_CRC_TX_CONFIG, False)
+        self._set_crc(PN5180_REG_CRC_RX_CONFIG, False)
+        atqa = self._exchange_14443([wakeup], last_byte_bits=7)  # REQA/WUPA short frame
+        if len(atqa) < 2:
+            return None
+        cl1 = self._exchange_14443([0x93, 0x20])  # ANTICOLLISION CL1 -> uid0-3 + BCC
+        if len(cl1) < 5:
+            return None
+        self._set_crc(PN5180_REG_CRC_TX_CONFIG, True)
+        self._set_crc(PN5180_REG_CRC_RX_CONFIG, True)
+        sak_resp = self._exchange_14443([0x93, 0x70] + list(cl1[:5]))  # SELECT CL1
+        sak = sak_resp[0] if sak_resp else 0
+        uid = bytes(cl1[:4])
+        if sak & 0x04:  # cascade bit -> 7-byte UID, do CL2
+            uid_part1 = bytes(cl1[1:4])  # drop the 0x88 cascade tag
+            self._set_crc(PN5180_REG_CRC_TX_CONFIG, False)
+            self._set_crc(PN5180_REG_CRC_RX_CONFIG, False)
+            cl2 = self._exchange_14443([0x95, 0x20])
+            if len(cl2) >= 5:
+                self._set_crc(PN5180_REG_CRC_TX_CONFIG, True)
+                self._set_crc(PN5180_REG_CRC_RX_CONFIG, True)
+                sak2 = self._exchange_14443([0x95, 0x70] + list(cl2[:5]))
+                sak = sak2[0] if sak2 else sak
+                uid = uid_part1 + bytes(cl2[:4])
+        return {'uid': uid, 'atqa': bytes(atqa[:2]), 'sak': sak}
+
     def detect_iso14443a(self) -> Optional[dict[str, Any]]:
         """Activate one ISO 14443-A tag and return UID / ATQA / SAK / type."""
         self._recover_if_busy_stuck()
         self._send([0x11, *RF_CONFIG_ISO14443A_106])  # LOAD_RF_CONFIG
         self._send([0x16, 0x00])  # RF_ON
         try:
-            self._set_crc(PN5180_REG_CRC_TX_CONFIG, False)
-            self._set_crc(PN5180_REG_CRC_RX_CONFIG, False)
-            atqa = self._exchange_14443([0x26], last_byte_bits=7)  # REQA short frame
-            if len(atqa) < 2:
+            tag = self._activate_iso14443a(0x26)
+            if not tag:
                 return None
-
-            cl1 = self._exchange_14443([0x93, 0x20])  # ANTICOLLISION CL1 -> uid0-3 + BCC
-            if len(cl1) < 5:
-                return None
-            self._set_crc(PN5180_REG_CRC_TX_CONFIG, True)
-            self._set_crc(PN5180_REG_CRC_RX_CONFIG, True)
-            sak_resp = self._exchange_14443([0x93, 0x70] + list(cl1[:5]))  # SELECT CL1
-            sak = sak_resp[0] if sak_resp else 0
-            uid = bytes(cl1[:4])
-
-            if sak & 0x04:  # cascade bit -> 7-byte UID, do CL2
-                uid_part1 = bytes(cl1[1:4])  # drop the 0x88 cascade tag
-                self._set_crc(PN5180_REG_CRC_TX_CONFIG, False)
-                self._set_crc(PN5180_REG_CRC_RX_CONFIG, False)
-                cl2 = self._exchange_14443([0x95, 0x20])
-                if len(cl2) >= 5:
-                    self._set_crc(PN5180_REG_CRC_TX_CONFIG, True)
-                    self._set_crc(PN5180_REG_CRC_RX_CONFIG, True)
-                    sak2 = self._exchange_14443([0x95, 0x70] + list(cl2[:5]))
-                    sak = sak2[0] if sak2 else sak
-                    uid = uid_part1 + bytes(cl2[:4])
             return {
-                'uid': format_bytes(uid),
-                'atqa': bytes(atqa[:2]).hex(),
-                'sak': f'0x{sak:02X}',
-                'type': guess_iso14443a_type(bytes(atqa[:2]), sak),
+                'uid': format_bytes(tag['uid']),
+                'atqa': tag['atqa'].hex(),
+                'sak': f"0x{tag['sak']:02X}",
+                'type': guess_iso14443a_type(tag['atqa'], tag['sak']),
             }
+        finally:
+            self._send([0x17, 0x00])  # RF_OFF
+
+    def _mifare_authenticate(self, uid: bytes, block: int, key: bytes, key_type: int) -> bool:
+        """PN5180 MIFARE_AUTHENTICATE (0x0C): key(6) + keyType + block + uid(4)."""
+        command = [0x0C] + list(key[:6]) + [key_type, block & 0xFF] + list(uid[:4])
+        response = self._read_after_command(command, 1)
+        return len(response) >= 1 and response[0] == 0x00
+
+    def _mifare_read_block(self, block: int) -> bytes:
+        self._set_crc(PN5180_REG_CRC_TX_CONFIG, True)
+        self._set_crc(PN5180_REG_CRC_RX_CONFIG, True)
+        return bytes(self._exchange_14443([0x30, block & 0xFF])[:16])
+
+    def dump_mifare_classic(self, sectors: int = 16, keys: Optional[list[bytes]] = None) -> Optional[dict[str, Any]]:
+        """Authenticate each sector with default keys and read its blocks."""
+        keys = keys or MIFARE_DEFAULT_KEYS
+        self._recover_if_busy_stuck()
+        self._send([0x11, *RF_CONFIG_ISO14443A_106])
+        self._send([0x16, 0x00])  # RF_ON
+        result: dict[str, Any] = {'uid': None, 'sectors': {}, 'failed_sectors': []}
+        try:
+            first = self._activate_iso14443a(0x26)
+            if not first:
+                return None
+            uid = first['uid'][:4]
+            result['uid'] = format_bytes(first['uid'])
+            for sector in range(sectors):
+                first_block = sector * 4
+                opened = False
+                for key in keys:
+                    for key_type in (0x60, 0x61):
+                        # Re-activate before each attempt; a failed auth halts the card.
+                        if not self._activate_iso14443a(0x52):
+                            continue
+                        if self._mifare_authenticate(uid, first_block, key, key_type):
+                            blocks = [self._mifare_read_block(b).hex() for b in range(first_block, first_block + 4)]
+                            result['sectors'][sector] = {
+                                'key': key.hex(),
+                                'key_type': 'A' if key_type == 0x60 else 'B',
+                                'blocks': blocks,
+                            }
+                            opened = True
+                            break
+                    if opened:
+                        break
+                if not opened:
+                    result['failed_sectors'].append(sector)
+            return result
         finally:
             self._send([0x17, 0x00])  # RF_OFF
 
@@ -1402,6 +1464,39 @@ def run_self_test() -> None:
     emit_action_complete(status)
 
 
+def run_dump_mifare() -> None:
+    if not ensure_reader():
+        record_operation('dump_mifare', 'fail', reason='reader_offline')
+        return
+    dump_mifare_classic = getattr(reader, 'dump_mifare_classic', None)
+    if not callable(dump_mifare_classic):
+        log_to_web('ℹ️ MIFARE dump requires the direct-SPI PN5180 backend.')
+        record_operation('dump_mifare', 'skipped', backend=NFC_READER_BACKEND)
+        emit_action_complete('fail')
+        return
+    log_to_web('🃏 MIFARE Classic dump — activating and trying default keys...')
+    result = reader.dump_mifare_classic()
+    if not result:
+        log_to_web('❌ No MIFARE Classic tag detected. Hold a Type-A card flat on the antenna.')
+        record_operation('dump_mifare', 'fail', reason='no_tag')
+        emit_action_complete('fail')
+        return
+    log_to_web(f"🎯 UID: {result['uid']}")
+    for sector in sorted(result['sectors']):
+        info = result['sectors'][sector]
+        log_to_web(f"   • Sector {sector:02d} (key {info['key_type']} {info['key']}):")
+        for offset, block_hex in enumerate(info['blocks']):
+            log_to_web(f"       blk {sector * 4 + offset:02d}: {block_hex}")
+    if result['failed_sectors']:
+        log_to_web(f"   ⚠️ Not opened with default keys: sectors {result['failed_sectors']}")
+    opened = len(result['sectors'])
+    status = 'success' if opened else 'fail'
+    log_to_web(f'{"✅" if opened else "❌"} Dumped {opened} sector(s) with default keys.')
+    record_operation('dump_mifare', status, uid=result['uid'], opened_sectors=opened,
+                     failed_sectors=result['failed_sectors'])
+    emit_action_complete(status)
+
+
 def run_identify() -> None:
     if not ensure_reader():
         record_operation('identify', 'fail', reason='reader_offline')
@@ -1618,6 +1713,11 @@ def handle_scan_tag():
 @socketio.on('identify')
 def handle_identify():
     socketio.start_background_task(with_lock, run_identify)
+
+
+@socketio.on('dump_mifare')
+def handle_dump_mifare():
+    socketio.start_background_task(with_lock, run_dump_mifare)
 
 
 @socketio.on('self_test')

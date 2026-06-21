@@ -51,6 +51,7 @@
 
                 <div class="row">
                     <button id="identifyBtn" class="btn primary">Identify Tag (any protocol)</button>
+                    <button id="dumpMifareBtn" class="btn">Dump MIFARE Classic</button>
                 </div>
                 <div class="row">
                     <button id="scanBtn" class="btn">Scan NFC-V UID</button>
@@ -79,7 +80,7 @@
 <script>
     const socket = io();
     const $ = id => document.getElementById(id);
-    const controls = ['burnBtn','identifyBtn','scanBtn','verifyBtn','tagInfoBtn','dumpBtn','selfTestBtn','reconnectBtn','setCounterBtn','lockBtn'].map($);
+    const controls = ['burnBtn','identifyBtn','dumpMifareBtn','scanBtn','verifyBtn','tagInfoBtn','dumpBtn','selfTestBtn','reconnectBtn','setCounterBtn','lockBtn'].map($);
 
     function busy(value){ controls.forEach(button => button && (button.disabled = value)); }
 
@@ -98,6 +99,7 @@
     }
 
     $('identifyBtn').onclick = () => { busy(true); addLog('🔎 Identifying tag...'); socket.emit('identify'); };
+    $('dumpMifareBtn').onclick = () => { busy(true); addLog('🃏 Dumping MIFARE Classic...'); socket.emit('dump_mifare'); };
     $('burnBtn').onclick = () => { busy(true); addLog('🚀 Starting ink clone workflow...'); socket.emit('start_burn'); };
     $('scanBtn').onclick = () => { busy(true); addLog('⏳ Initializing target tag scan...'); socket.emit('scan_tag'); };
     $('verifyBtn').onclick = () => { busy(true); addLog('🔍 Verifying clone against master...'); socket.emit('verify_clone'); };
