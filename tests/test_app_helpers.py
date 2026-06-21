@@ -840,6 +840,34 @@ class HelperTests(unittest.TestCase):
         expected_frame = [0x09, 0x00, 0x22, 0x2C] + list(bytes(range(8))[::-1]) + [0x00, 0x03]
         self.assertIn(expected_frame, fake_pigpio.pi_instance.transfers)
 
+    def test_run_dump_tag_records_data_and_locks(self):
+        class FakeReader:
+            label = 'fake'
+
+            def poll_uid(self):
+                return app.TARGET_UID
+
+            def read_block(self, _uid, index):
+                return app.CLEARED_DATA_BLOCKS[index]
+
+            def read_block_security(self, _uid, _first, count):
+                return [index in (1, 3) for index in range(count)]
+
+        with (
+            patch.object(app, 'reader', FakeReader()),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_dump_tag()
+            record = app.operation_history[-1]
+
+        self.assertEqual(record['operation'], 'dump')
+        self.assertEqual(record['status'], 'success')
+        self.assertEqual(record['details']['locked_blocks'], [1, 3])
+        self.assertEqual(
+            record['details']['data'],
+            ''.join(block.hex() for block in app.CLEARED_DATA_BLOCKS),
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -53,6 +53,7 @@
                     <button id="scanBtn" class="btn">Scan NFC-V UID</button>
                     <button id="verifyBtn" class="btn">Verify Clone</button>
                     <button id="tagInfoBtn" class="btn">Tag Info</button>
+                    <button id="dumpBtn" class="btn">Dump Tag</button>
                     <button id="selfTestBtn" class="btn">Self-Test</button>
                     <button id="reconnectBtn" class="btn secondary">Reconnect Reader</button>
                     <button id="clearBtn" class="btn ghost" type="button">Clear Console</button>
@@ -69,7 +70,7 @@
 <script>
     const socket = io();
     const $ = id => document.getElementById(id);
-    const controls = ['burnBtn','scanBtn','verifyBtn','tagInfoBtn','selfTestBtn','reconnectBtn'].map($);
+    const controls = ['burnBtn','scanBtn','verifyBtn','tagInfoBtn','dumpBtn','selfTestBtn','reconnectBtn'].map($);
 
     function busy(value){ controls.forEach(button => button && (button.disabled = value)); }
 
@@ -91,6 +92,7 @@
     $('scanBtn').onclick = () => { busy(true); addLog('⏳ Initializing target tag scan...'); socket.emit('scan_tag'); };
     $('verifyBtn').onclick = () => { busy(true); addLog('🔍 Verifying clone against master...'); socket.emit('verify_clone'); };
     $('tagInfoBtn').onclick = () => { busy(true); addLog('🪪 Reading tag profile...'); socket.emit('tag_info'); };
+    $('dumpBtn').onclick = () => { busy(true); addLog('🗂️ Dumping all blocks...'); socket.emit('dump_tag'); };
     $('selfTestBtn').onclick = () => { busy(true); addLog('🔎 Running PN5180 self-test...'); socket.emit('self_test'); };
     $('reconnectBtn').onclick = () => { busy(true); addLog('🔄 Reconnecting reader...'); socket.emit('reconnect_reader'); };
     $('clearBtn').onclick = () => { $('console').innerHTML = '<div class="line-note">[Idle] Console cleared.</div>'; };
