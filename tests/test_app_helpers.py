@@ -285,9 +285,10 @@ class HelperTests(unittest.TestCase):
             reader = app.PN5180Iso15693Reader()
             reader.write_uid_backdoor(app.TARGET_UID)
 
-        # Gen2 magic UID-set: high 4 bytes via 0x40, low 4 bytes via 0x41 (display order).
-        self.assertEqual(reader.device.frames[0], bytes([0x02, 0xE0, 0x09, 0x40]) + app.TARGET_UID[0:4])
-        self.assertEqual(reader.device.frames[1], bytes([0x02, 0xE0, 0x09, 0x41]) + app.TARGET_UID[4:8])
+        # Gen2 magic UID-set: UID in wire order (LSB first), high 4 via 0x40, low 4 via 0x41.
+        wire = app.TARGET_UID[::-1]
+        self.assertEqual(reader.device.frames[0], bytes([0x02, 0xE0, 0x09, 0x40]) + wire[0:4])
+        self.assertEqual(reader.device.frames[1], bytes([0x02, 0xE0, 0x09, 0x41]) + wire[4:8])
 
 
     def test_reset_pn5180_hardware_pulses_configured_reset_pin_via_pigpio(self):
@@ -755,8 +756,9 @@ class HelperTests(unittest.TestCase):
             reader.write_uid_backdoor(app.TARGET_UID)
 
         transfers = fake_pigpio.pi_instance.transfers
-        self.assertIn([0x09, 0x00, 0x02, 0xE0, 0x09, 0x40] + list(app.TARGET_UID[0:4]), transfers)
-        self.assertIn([0x09, 0x00, 0x02, 0xE0, 0x09, 0x41] + list(app.TARGET_UID[4:8]), transfers)
+        wire = app.TARGET_UID[::-1]
+        self.assertIn([0x09, 0x00, 0x02, 0xE0, 0x09, 0x40] + list(wire[0:4]), transfers)
+        self.assertIn([0x09, 0x00, 0x02, 0xE0, 0x09, 0x41] + list(wire[4:8]), transfers)
 
 
 if __name__ == '__main__':
