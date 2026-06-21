@@ -479,7 +479,23 @@ class DirectSpiPN5180Iso15693Reader:
             time.sleep(0.005)
         return False
 
+    def _recover_if_busy_stuck(self) -> None:
+        """Hardware-reset the PN5180 if BUSY is still asserted from a prior op.
+
+        Some transceives (notably ISO 15693 block writes) can leave the state
+        machine non-idle with BUSY high, which would hang the next operation. A
+        brief grace period covers a normal late release; if BUSY is genuinely
+        stuck, a reset returns the chip to a clean idle state.
+        """
+        deadline = time.monotonic() + 0.05
+        while self._pi.read(PN5180_BUSY_PIN):
+            if time.monotonic() > deadline:
+                self._hardware_reset()
+                return
+            time.sleep(0.001)
+
     def _prepare_iso15693(self) -> None:
+        self._recover_if_busy_stuck()
         self._send([0x11, 0x0D, 0x8D])  # LOAD_RF_CONFIG: ISO 15693
         self._send([0x16, 0x00])  # RF_ON
         self._send([0x00, 0x03, 0xFF, 0xFF, 0x0F, 0x00])  # WRITE_REGISTER IRQ_CLEAR
@@ -492,6 +508,9 @@ class DirectSpiPN5180Iso15693Reader:
         response = b''
         if self._card_has_responded():
             response = bytes(self._read_data(self._bytes_in_card_buffer))
+        # Return the command state machine to IDLE before dropping RF so a write
+        # transceive does not leave the chip non-idle with BUSY asserted.
+        self._send([0x02, 0x00, 0xF8, 0xFF, 0xFF, 0xFF])  # SYSTEM_CONFIG -> IDLE
         self._send([0x17, 0x00])  # RF_OFF
         return response
 

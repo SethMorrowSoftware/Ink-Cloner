@@ -502,6 +502,58 @@ class HelperTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 reader._wait_ready()
 
+    def _build_reset_recording_pigpio(self, busy_value):
+        reset_writes = []
+
+        class FakePi:
+            connected = True
+
+            def spi_open(self, *_args):
+                return 7
+
+            def set_mode(self, *_args):
+                pass
+
+            def write(self, pin, value):
+                if pin == app.PN5180_RESET_PIN:
+                    reset_writes.append(value)
+
+            def read(self, _pin):
+                return busy_value
+
+            def spi_xfer(self, _handle, frame):
+                return len(frame), bytearray(len(frame))
+
+        class FakePigpioModule:
+            INPUT = 'INPUT'
+            OUTPUT = 'OUTPUT'
+
+            def __init__(self):
+                self.pi_instance = FakePi()
+
+            def pi(self):
+                return self.pi_instance
+
+        return FakePigpioModule(), reset_writes
+
+    def test_recover_if_busy_stuck_hardware_resets_chip(self):
+        fake_pigpio, reset_writes = self._build_reset_recording_pigpio(busy_value=1)
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            reset_writes.clear()  # drop the constructor's reset pulse
+            reader._recover_if_busy_stuck()
+        # A stuck BUSY line triggers a reset pulse (RESET driven low then high).
+        self.assertIn(0, reset_writes)
+        self.assertIn(1, reset_writes)
+
+    def test_recover_if_busy_stuck_is_noop_when_ready(self):
+        fake_pigpio, reset_writes = self._build_reset_recording_pigpio(busy_value=0)
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            reset_writes.clear()
+            reader._recover_if_busy_stuck()
+        self.assertEqual(reset_writes, [])  # ready chip is not reset
+
     def test_describe_reader_self_test_survives_busy_timeout(self):
         # A stuck BUSY line must not hang startup: self-test fails gracefully so
         # initialize_hardware can still reach socketio.run and serve the UI.
