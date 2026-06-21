@@ -169,12 +169,21 @@ RF_CONFIG_ISO14443A_106 = (0x00, 0x80)
 PN5180_REG_CRC_RX_CONFIG = 0x12
 PN5180_REG_CRC_TX_CONFIG = 0x19
 
-# Common factory/default MIFARE Classic keys, tried per sector during a dump.
+# Well-known factory/default MIFARE Classic keys, tried per sector during a dump
+# (factory blank, MAD, NDEF public, and the most common mfoc/Proxmark dictionary
+# entries). A failed auth halts the card and forces a re-select, so each extra
+# key lengthens the dump — this list is kept short on purpose.
 MIFARE_DEFAULT_KEYS = [
-    bytes.fromhex('FFFFFFFFFFFF'),
-    bytes.fromhex('A0A1A2A3A4A5'),
-    bytes.fromhex('D3F7D3F7D3F7'),
-    bytes.fromhex('000000000000'),
+    bytes.fromhex(key) for key in (
+        'FFFFFFFFFFFF',  # factory blank
+        'A0A1A2A3A4A5',  # MAD key A
+        'D3F7D3F7D3F7',  # NDEF / NFC Forum public
+        '000000000000',
+        'A0B0C0D0E0F0',
+        'B0B1B2B3B4B5',
+        'AABBCCDDEEFF',
+        '4D3A99C351DD',
+    )
 ]
 # In an inventory request bit 6 is the Nb_slots flag: set it to run a single
 # slot, which is the most reliable way to detect one sticker on the antenna.
@@ -825,7 +834,15 @@ class DirectSpiPN5180Iso15693Reader:
     def _mifare_read_block(self, block: int) -> bytes:
         self._set_crc(PN5180_REG_CRC_TX_CONFIG, True)
         self._set_crc(PN5180_REG_CRC_RX_CONFIG, True)
-        return bytes(self._exchange_14443([0x30, block & 0xFF])[:16])
+        # The first transceive right after MIFARE_AUTHENTICATE occasionally drops
+        # its response while the encrypted session settles (later blocks in the
+        # same sector read fine); a second read in the session recovers it.
+        data = b''
+        for _ in range(2):
+            data = bytes(self._exchange_14443([0x30, block & 0xFF])[:16])
+            if data:
+                break
+        return data
 
     def dump_mifare_classic(self, sectors: int = 16, keys: Optional[list[bytes]] = None) -> Optional[dict[str, Any]]:
         """Authenticate each sector with default keys and read its blocks."""
