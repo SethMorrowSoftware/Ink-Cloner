@@ -150,6 +150,7 @@ ISO15693_FLAG_DATA_RATE_HIGH = 0x02
 ISO15693_FLAG_INVENTORY = 0x04
 ISO15693_FLAG_ADDRESS = 0x20
 ISO15693_CMD_INVENTORY = 0x01
+ISO15693_CMD_READ_SINGLE_BLOCK = 0x20
 ISO15693_CMD_WRITE_SINGLE_BLOCK = 0x21
 ISO15693_CMD_WRITE_UID_BACKDOOR = 0xB4
 # In an inventory request bit 6 is the Nb_slots flag: set it to run a single
@@ -212,6 +213,9 @@ class Iso15693Reader(Protocol):
 
     def poll_uid(self) -> Optional[bytes]:
         """Return one ISO 15693 UID when a tag is present."""
+
+    def read_block(self, uid: bytes, block_index: int) -> bytes:
+        """Read one ISO 15693 memory block."""
 
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         """Write one ISO 15693 memory block."""
@@ -312,6 +316,18 @@ def parse_iso15693_uid(response: Optional[bytes]) -> Optional[bytes]:
 def validate_block_data(data: bytes) -> bytes:
     if len(data) != ISO15693_BLOCK_SIZE:
         raise ValueError(f'ISO 15693 block must be {ISO15693_BLOCK_SIZE} bytes, got {len(data)}')
+    return data
+
+
+def parse_iso15693_block_response(response: bytes, block_index: int) -> bytes:
+    """Extract block data from a READ_SINGLE_BLOCK response (flags byte + data)."""
+    validate_iso15693_response(response)
+    data = bytes(response[1:1 + ISO15693_BLOCK_SIZE])
+    if len(data) != ISO15693_BLOCK_SIZE:
+        raise RuntimeError(
+            f'ISO 15693 block {block_index} read returned {len(data)} of '
+            f'{ISO15693_BLOCK_SIZE} bytes'
+        )
     return data
 
 
@@ -570,6 +586,16 @@ class DirectSpiPN5180Iso15693Reader:
         finally:
             self._send([0x17, 0x00])  # RF_OFF
 
+    def read_block(self, uid: bytes, block_index: int) -> bytes:
+        uid = validate_uid(uid)
+        if not 0 <= block_index <= 0xFF:
+            raise ValueError(f'ISO 15693 block index out of range: {block_index}')
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_READ_SINGLE_BLOCK,
+        ]) + uid[::-1] + bytes([block_index])
+        return parse_iso15693_block_response(self.exchange(frame), block_index)
+
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         uid = validate_uid(uid)
         data = validate_block_data(data)
@@ -650,6 +676,16 @@ class PN5180Iso15693Reader:
             0x00,  # mask length
         ])
         return parse_iso15693_inventory_response(self.exchange(frame))
+
+    def read_block(self, uid: bytes, block_index: int) -> bytes:
+        uid = validate_uid(uid)
+        if not 0 <= block_index <= 0xFF:
+            raise ValueError(f'ISO 15693 block index out of range: {block_index}')
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_READ_SINGLE_BLOCK,
+        ]) + uid[::-1] + bytes([block_index])
+        return parse_iso15693_block_response(self.exchange(frame), block_index)
 
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         uid = validate_uid(uid)
@@ -805,6 +841,82 @@ def log_scan_diagnostics() -> None:
         log_to_web('   • PN5180 identity read was empty earlier — run Self-Test; SPI comms may be the real problem.')
     else:
         log_to_web('   • Tip: press Self-Test to confirm the PN5180 is actually responding on SPI.')
+
+
+def run_verify() -> None:
+    if not ensure_reader():
+        record_operation('verify', 'fail', reason='reader_offline')
+        return
+    read_block = getattr(reader, 'read_block', None)
+    if not callable(read_block):
+        log_to_web('ℹ️ Verify requires a reader backend with block-read support.')
+        record_operation('verify', 'skipped', backend=NFC_READER_BACKEND)
+        emit_action_complete('fail')
+        return
+
+    total_blocks = len(CLEARED_DATA_BLOCKS)
+    log_to_web('🔍 Verify: reading the tag back and comparing to the master...')
+    uid = poll_for_iso15693_tag()
+    if not uid:
+        log_to_web('❌ No sticker detected to verify.')
+        log_scan_diagnostics()
+        record_operation('verify', 'fail', reason='timeout')
+        emit_action_complete('fail')
+        return
+
+    log_to_web(f'🎯 Tag UID: {format_uid(uid)}')
+    uid_matches = uid == TARGET_UID
+    if uid_matches:
+        log_to_web(f'   ✅ UID matches master {format_uid(TARGET_UID)}.')
+    else:
+        log_to_web(
+            f'   ⚠️ UID is {format_uid(uid)}, master is {format_uid(TARGET_UID)} — '
+            'UID not cloned (only matters if your booth checks the UID).'
+        )
+
+    mismatched_blocks: list[int] = []
+    read_errors: list[int] = []
+    for block_index, expected in enumerate(CLEARED_DATA_BLOCKS):
+        try:
+            actual = bytes(reader.read_block(uid, block_index))
+        except Exception as exc:
+            read_errors.append(block_index)
+            log_to_web(f'   ⚠️ Block {block_index:02d} read failed: {exc}')
+            continue
+        if actual != bytes(expected):
+            mismatched_blocks.append(block_index)
+            log_to_web(f'   ❌ Block {block_index:02d} differs: read {actual.hex()} expected {bytes(expected).hex()}')
+        if (block_index + 1) % 16 == 0 or block_index + 1 == total_blocks:
+            log_to_web(f'   • Verified {block_index + 1}/{total_blocks} blocks...')
+
+    data_matches = not mismatched_blocks and not read_errors
+    if data_matches:
+        log_to_web(f'   ✅ All {total_blocks} data blocks match the master.')
+    else:
+        log_to_web(
+            f'   ❌ {len(mismatched_blocks)} block(s) differ, {len(read_errors)} read error(s) — '
+            're-run the burn.'
+        )
+
+    if data_matches and uid_matches:
+        log_to_web('✅ Verify passed: exact clone (UID + all data blocks match).')
+        status = 'success'
+    elif data_matches:
+        log_to_web('⚠️ Verify: data is a faithful copy, but the UID was not cloned.')
+        status = 'fail'
+    else:
+        log_to_web('❌ Verify failed: the data on the tag does not match the master.')
+        status = 'fail'
+
+    record_operation(
+        'verify',
+        status,
+        uid=format_uid(uid),
+        uid_matches=uid_matches,
+        mismatched_blocks=mismatched_blocks,
+        read_errors=read_errors,
+    )
+    emit_action_complete(status)
 
 
 def run_self_test() -> None:
@@ -1010,6 +1122,11 @@ def handle_scan_tag():
 @socketio.on('self_test')
 def handle_self_test():
     socketio.start_background_task(with_lock, run_self_test)
+
+
+@socketio.on('verify_clone')
+def handle_verify():
+    socketio.start_background_task(with_lock, run_verify)
 
 
 @socketio.on('reconnect_reader')

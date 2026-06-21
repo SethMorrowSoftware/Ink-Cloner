@@ -652,6 +652,97 @@ class HelperTests(unittest.TestCase):
             app.run_self_test()
             self.assertEqual(app.operation_history[-1]['status'], 'fail')
 
+    def test_parse_iso15693_block_response_extracts_data(self):
+        self.assertEqual(
+            app.parse_iso15693_block_response(bytes([0x00, 0x11, 0x22, 0x33, 0x44]), 0),
+            bytes([0x11, 0x22, 0x33, 0x44]),
+        )
+
+    def test_parse_iso15693_block_response_rejects_error_and_short(self):
+        with self.assertRaises(RuntimeError):
+            app.parse_iso15693_block_response(bytes([0x01, 0x0F]), 3)   # error flag set
+        with self.assertRaises(RuntimeError):
+            app.parse_iso15693_block_response(bytes([0x00, 0x11]), 2)   # too few data bytes
+
+    def test_direct_spi_read_block_returns_block_data(self):
+        fake_pigpio = self._build_fake_pigpio([
+            [0x01, 0, 0, 0],                      # IRQ_STATUS: RX_IRQ set
+            [5, 0, 0, 0],                         # RX_STATUS: flags + 4 data bytes
+            [0x00, 0x11, 0x22, 0x33, 0x44],       # response: flags + block data
+        ])
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            data = reader.read_block(bytes(range(8)), 7)
+
+        self.assertEqual(data, bytes([0x11, 0x22, 0x33, 0x44]))
+        uid_reversed = list(bytes(range(8))[::-1])
+        expected_frame = [0x09, 0x00, 0x22, 0x20] + uid_reversed + [7]
+        self.assertIn(expected_frame, fake_pigpio.pi_instance.transfers)
+
+    def test_run_verify_passes_when_uid_and_blocks_match(self):
+        class FakeReader:
+            label = 'fake'
+
+            def poll_uid(self):
+                return app.TARGET_UID
+
+            def read_block(self, _uid, index):
+                return app.CLEARED_DATA_BLOCKS[index]
+
+        with (
+            patch.object(app, 'reader', FakeReader()),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_verify()
+            record = app.operation_history[-1]
+        self.assertEqual(record['operation'], 'verify')
+        self.assertEqual(record['status'], 'success')
+        self.assertTrue(record['details']['uid_matches'])
+
+    def test_run_verify_flags_block_mismatch(self):
+        class FakeReader:
+            label = 'fake'
+
+            def poll_uid(self):
+                return app.TARGET_UID
+
+            def read_block(self, _uid, index):
+                data = bytearray(app.CLEARED_DATA_BLOCKS[index])
+                if index == 5:
+                    data[0] ^= 0xFF
+                return bytes(data)
+
+        with (
+            patch.object(app, 'reader', FakeReader()),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_verify()
+            record = app.operation_history[-1]
+        self.assertEqual(record['status'], 'fail')
+        self.assertIn(5, record['details']['mismatched_blocks'])
+
+    def test_run_verify_reports_uid_not_cloned(self):
+        other_uid = bytes([0xE0, 0x53, 0x01, 0x10, 0x65, 0x34, 0x8E, 0x18])
+
+        class FakeReader:
+            label = 'fake'
+
+            def poll_uid(self):
+                return other_uid
+
+            def read_block(self, _uid, index):
+                return app.CLEARED_DATA_BLOCKS[index]
+
+        with (
+            patch.object(app, 'reader', FakeReader()),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_verify()
+            record = app.operation_history[-1]
+        self.assertEqual(record['status'], 'fail')          # not an exact clone
+        self.assertFalse(record['details']['uid_matches'])
+        self.assertEqual(record['details']['mismatched_blocks'], [])  # but data is faithful
+
 
 if __name__ == '__main__':
     unittest.main()
