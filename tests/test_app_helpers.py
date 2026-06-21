@@ -868,6 +868,36 @@ class HelperTests(unittest.TestCase):
             ''.join(block.hex() for block in app.CLEARED_DATA_BLOCKS),
         )
 
+    def test_run_set_counter_writes_counter_block_little_endian(self):
+        class FakeReader:
+            label = 'fake'
+
+            def __init__(self):
+                self.writes = []
+
+            def poll_uid(self):
+                return app.TARGET_UID
+
+            def write_block(self, _uid, index, data):
+                self.writes.append((index, bytes(data)))
+
+            def read_block(self, _uid, index):
+                if index == app.PRINT_COUNTER_BLOCK:
+                    return bytes([0xFF, 0x02, 0x00, 0x00])
+                return b''
+
+        fake = FakeReader()
+        with (
+            patch.object(app, 'reader', fake),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_set_counter(0x02FF)  # 767
+            record = app.operation_history[-1]
+
+        self.assertEqual(record['operation'], 'set_counter')
+        self.assertEqual(record['status'], 'success')
+        self.assertIn((app.PRINT_COUNTER_BLOCK, bytes([0xFF, 0x02, 0x00, 0x00])), fake.writes)
+
 
 if __name__ == '__main__':
     unittest.main()
