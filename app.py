@@ -152,6 +152,7 @@ ISO15693_FLAG_ADDRESS = 0x20
 ISO15693_CMD_INVENTORY = 0x01
 ISO15693_CMD_READ_SINGLE_BLOCK = 0x20
 ISO15693_CMD_WRITE_SINGLE_BLOCK = 0x21
+ISO15693_CMD_GET_SYSTEM_INFO = 0x2B
 # PN532Killer / MTools "Gen2 UID Changeable" ISO 15693 magic UID-set sequence:
 # two unaddressed custom frames carry the new UID in wire order (LSB first).
 # 0x40 sets the first four wire bytes, 0x41 the last four. Reference: MTools/
@@ -221,6 +222,9 @@ class Iso15693Reader(Protocol):
 
     def read_block(self, uid: bytes, block_index: int) -> bytes:
         """Read one ISO 15693 memory block."""
+
+    def read_system_info(self, uid: bytes) -> dict[str, Any]:
+        """Read the tag's Get System Information (DSFID/AFI/memory/IC reference)."""
 
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         """Write one ISO 15693 memory block."""
@@ -334,6 +338,38 @@ def parse_iso15693_block_response(response: bytes, block_index: int) -> bytes:
             f'{ISO15693_BLOCK_SIZE} bytes'
         )
     return data
+
+
+def parse_iso15693_system_info(response: bytes) -> dict[str, Any]:
+    """Parse a Get System Information response into the tag's identity fields.
+
+    Layout: flags + info_flags + UID(8) then, gated by info_flags bits,
+    DSFID(0x01), AFI(0x02), memory size(0x04 -> blocks-1, blocksize-1) and
+    IC reference(0x08).
+    """
+    validate_iso15693_response(response)
+    if len(response) < 10:
+        raise RuntimeError(f'Get System Information response too short: {response.hex()}')
+    info_flags = response[1]
+    info: dict[str, Any] = {
+        'uid': format_uid(bytes(response[2:10][::-1])),
+        'info_flags': f'0x{info_flags:02X}',
+    }
+    index = 10
+    if info_flags & 0x01 and index < len(response):
+        info['dsfid'] = f'0x{response[index]:02X}'
+        index += 1
+    if info_flags & 0x02 and index < len(response):
+        info['afi'] = f'0x{response[index]:02X}'
+        index += 1
+    if info_flags & 0x04 and index + 1 < len(response):
+        info['block_count'] = response[index] + 1
+        info['block_size'] = (response[index + 1] & 0x1F) + 1
+        index += 2
+    if info_flags & 0x08 and index < len(response):
+        info['ic_reference'] = f'0x{response[index]:02X}'
+        index += 1
+    return info
 
 
 def validate_uid(uid: bytes) -> bytes:
@@ -601,6 +637,14 @@ class DirectSpiPN5180Iso15693Reader:
         ]) + uid[::-1] + bytes([block_index])
         return parse_iso15693_block_response(self.exchange(frame), block_index)
 
+    def read_system_info(self, uid: bytes) -> dict[str, Any]:
+        uid = validate_uid(uid)
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_GET_SYSTEM_INFO,
+        ]) + uid[::-1]
+        return parse_iso15693_system_info(self.exchange(frame))
+
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         uid = validate_uid(uid)
         data = validate_block_data(data)
@@ -693,6 +737,14 @@ class PN5180Iso15693Reader:
             ISO15693_CMD_READ_SINGLE_BLOCK,
         ]) + uid[::-1] + bytes([block_index])
         return parse_iso15693_block_response(self.exchange(frame), block_index)
+
+    def read_system_info(self, uid: bytes) -> dict[str, Any]:
+        uid = validate_uid(uid)
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_GET_SYSTEM_INFO,
+        ]) + uid[::-1]
+        return parse_iso15693_system_info(self.exchange(frame))
 
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         uid = validate_uid(uid)
@@ -850,6 +902,42 @@ def log_scan_diagnostics() -> None:
         log_to_web('   • PN5180 identity read was empty earlier — run Self-Test; SPI comms may be the real problem.')
     else:
         log_to_web('   • Tip: press Self-Test to confirm the PN5180 is actually responding on SPI.')
+
+
+def run_tag_info() -> None:
+    if not ensure_reader():
+        record_operation('tag_info', 'fail', reason='reader_offline')
+        return
+    read_system_info = getattr(reader, 'read_system_info', None)
+    log_to_web('🪪 Reading full tag profile (UID + Get System Information)...')
+    uid = poll_for_iso15693_tag()
+    if not uid:
+        log_to_web('❌ No sticker detected.')
+        log_scan_diagnostics()
+        record_operation('tag_info', 'fail', reason='timeout')
+        emit_action_complete('fail')
+        return
+    log_to_web(f'🎯 UID: {format_uid(uid)}')
+    if not callable(read_system_info):
+        log_to_web('ℹ️ Tag info requires a backend with Get System Information support.')
+        record_operation('tag_info', 'skipped', backend=NFC_READER_BACKEND)
+        emit_action_complete('fail')
+        return
+    try:
+        info = reader.read_system_info(uid)
+    except Exception as exc:
+        log_to_web(f'⚠️ Get System Information failed: {exc}')
+        record_operation('tag_info', 'fail', error=str(exc))
+        emit_action_complete('fail')
+        return
+    log_to_web(f"   • DSFID: {info.get('dsfid', 'n/a')}")
+    log_to_web(f"   • AFI: {info.get('afi', 'n/a')}")
+    log_to_web(f"   • Memory: {info.get('block_count', 'n/a')} blocks x {info.get('block_size', 'n/a')} bytes")
+    log_to_web(f"   • IC reference: {info.get('ic_reference', 'n/a')}")
+    log_to_web(f"   • Info flags: {info.get('info_flags', 'n/a')}")
+    log_to_web('   • Run this on the genuine master and the clone and compare the fields.')
+    record_operation('tag_info', 'success', **info)
+    emit_action_complete('success')
 
 
 def run_verify() -> None:
@@ -1150,6 +1238,11 @@ def handle_self_test():
 @socketio.on('verify_clone')
 def handle_verify():
     socketio.start_background_task(with_lock, run_verify)
+
+
+@socketio.on('tag_info')
+def handle_tag_info():
+    socketio.start_background_task(with_lock, run_tag_info)
 
 
 @socketio.on('reconnect_reader')
