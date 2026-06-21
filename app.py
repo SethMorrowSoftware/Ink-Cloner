@@ -152,7 +152,12 @@ ISO15693_FLAG_ADDRESS = 0x20
 ISO15693_CMD_INVENTORY = 0x01
 ISO15693_CMD_READ_SINGLE_BLOCK = 0x20
 ISO15693_CMD_WRITE_SINGLE_BLOCK = 0x21
-ISO15693_CMD_WRITE_UID_BACKDOOR = 0xB4
+# PN532Killer / MTools "Gen2 UID Changeable" ISO 15693 magic UID-set sequence:
+# two unaddressed custom frames carry the high and low halves of the new UID in
+# display order (MSB first). Reference: MTools/PN532Killer raw commands and the
+# Proxmark `hf 15 csetuid --v2` byte layout.
+ISO15693_MAGIC_SET_UID_HIGH = bytes([0x02, 0xE0, 0x09, 0x40])
+ISO15693_MAGIC_SET_UID_LOW = bytes([0x02, 0xE0, 0x09, 0x41])
 # In an inventory request bit 6 is the Nb_slots flag: set it to run a single
 # slot, which is the most reliable way to detect one sticker on the antenna.
 ISO15693_FLAG_NB_SLOTS_ONE = 0x20
@@ -609,8 +614,9 @@ class DirectSpiPN5180Iso15693Reader:
 
     def write_uid_backdoor(self, uid: bytes) -> None:
         uid = validate_uid(uid)
-        frame = bytes([ISO15693_FLAG_DATA_RATE_HIGH, ISO15693_CMD_WRITE_UID_BACKDOOR, 0x00]) + uid
-        validate_iso15693_response(self.exchange(frame))
+        # Gen2 magic UID-set: high 4 bytes, then low 4 bytes (display order).
+        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_HIGH + uid[0:4]))
+        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_LOW + uid[4:8]))
 
 
 class PN5180Iso15693Reader:
@@ -703,8 +709,9 @@ class PN5180Iso15693Reader:
 
     def write_uid_backdoor(self, uid: bytes) -> None:
         uid = validate_uid(uid)
-        frame = bytes([ISO15693_FLAG_DATA_RATE_HIGH, ISO15693_CMD_WRITE_UID_BACKDOOR, 0x00]) + uid
-        validate_iso15693_response(self.exchange(frame))
+        # Gen2 magic UID-set: high 4 bytes, then low 4 bytes (display order).
+        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_HIGH + uid[0:4]))
+        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_LOW + uid[4:8]))
 
 
 def emit_action_complete(status: str) -> None:
@@ -1039,8 +1046,22 @@ def run_burn_sequence() -> None:
             if not reader:
                 raise RuntimeError('reader offline')
             reader.write_uid_backdoor(TARGET_UID)
-            uid_backdoor_status = 'success'
-            log_to_web(f'   • Master UID set to: {format_uid(TARGET_UID)}')
+            new_uid = None
+            for _ in range(3):
+                new_uid = reader.poll_uid()
+                if new_uid:
+                    break
+            if new_uid == TARGET_UID:
+                uid_backdoor_status = 'success'
+                log_to_web(f'   • ✅ Master UID set and verified: {format_uid(TARGET_UID)}')
+            else:
+                uid_backdoor_status = 'fail'
+                current = format_uid(new_uid) if new_uid else 'unreadable'
+                log_to_web(
+                    f'   ⚠️ UID did not change: tag still reports {current} '
+                    f'(expected {format_uid(TARGET_UID)}). The UID-set commands target '
+                    'PN532Killer / MTools Gen2 UID-changeable tags — confirm your blank is that type.'
+                )
         except Exception as exc:
             uid_backdoor_status = 'fail'
             log_to_web(f'   ⚠️ UID backdoor write failed: {exc}')

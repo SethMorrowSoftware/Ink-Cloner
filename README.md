@@ -143,7 +143,7 @@ The web UI can still start on a development machine without PN5180 libraries ins
 - `TAG_DETECTION_TIMEOUT_SECONDS` (default `15`, minimum `1`)
 - `TAG_DETECTION_POLL_SECONDS` (default `0.2`, minimum `0.05`)
 - `ISO15693_BLOCK_SIZE` (default `4`, minimum `1`)
-- `ENABLE_UID_BACKDOOR` (default `false`; set to `true` only when you are authorized to send the PN5180 magic UID backdoor command to compatible ISO 15693 media)
+- `ENABLE_UID_BACKDOOR` (default `false`; set to `true` to also rewrite the tag UID during a burn). The UID-set sequence targets **PN532Killer / MTools "Gen2 UID Changeable"** ISO 15693 magic tags (two custom frames: `02 E0 09 40` + high UID bytes, `02 E0 09 41` + low UID bytes). The burn re-reads the UID afterward and reports if the change did not take — a normal, factory-locked ISO 15693 tag will not accept it.
 
 ## Testing
 ```bash
