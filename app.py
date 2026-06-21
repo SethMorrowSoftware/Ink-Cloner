@@ -177,6 +177,10 @@ op_lock = Lock()
 operation_history: list[dict[str, Any]] = []
 
 TARGET_UID = bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32])
+# DNP media stores the prints-remaining counter in block 2, 16-bit little-endian
+# (observed decrement 0x0083=131 -> 0x0082=130 after one print). The block is
+# unlocked so the printer can update it; that also lets us write it for testing.
+PRINT_COUNTER_BLOCK = 2
 CLEARED_DATA_BLOCKS = [
     bytes([0x29, 0x50, 0x4E, 0x44]), bytes([0x00, 0x01, 0xA3, 0x42]),
     bytes([0x45, 0x02, 0x00, 0x00]), bytes([0xA1, 0x10, 0x13, 0x17]),
@@ -985,6 +989,50 @@ def run_tag_info() -> None:
     emit_action_complete('success')
 
 
+def run_set_counter(value: int) -> None:
+    if not ensure_reader():
+        record_operation('set_counter', 'fail', reason='reader_offline')
+        return
+    write_block = getattr(reader, 'write_block', None)
+    if not callable(write_block):
+        log_to_web('ℹ️ Set Counter requires a backend with block-write support.')
+        record_operation('set_counter', 'skipped', backend=NFC_READER_BACKEND)
+        emit_action_complete('fail')
+        return
+    value = max(0, min(int(value), 0xFFFF))
+    block = bytes([value & 0xFF, (value >> 8) & 0xFF, 0x00, 0x00])
+    log_to_web(f'🔢 Setting prints-remaining counter (block {PRINT_COUNTER_BLOCK}) to {value} ({block.hex()})...')
+    uid = poll_for_iso15693_tag()
+    if not uid:
+        log_to_web('❌ No sticker detected.')
+        log_scan_diagnostics()
+        record_operation('set_counter', 'fail', reason='timeout')
+        emit_action_complete('fail')
+        return
+    try:
+        reader.write_block(uid, PRINT_COUNTER_BLOCK, block)
+    except Exception as exc:
+        log_to_web(f'❌ Counter write failed: {exc}')
+        record_operation('set_counter', 'fail', error=str(exc))
+        emit_action_complete('fail')
+        return
+    readback = None
+    read_block = getattr(reader, 'read_block', None)
+    if callable(read_block):
+        try:
+            readback = bytes(reader.read_block(uid, PRINT_COUNTER_BLOCK))
+            log_to_web(f'   • Block {PRINT_COUNTER_BLOCK} now reads: {readback.hex()}')
+        except Exception as exc:
+            log_to_web(f'   • Readback failed: {exc}')
+    ok = readback is not None and readback[:2] == block[:2]
+    if ok:
+        log_to_web(f'✅ Counter set to {value}. Now try a print in the booth and watch the count.')
+    else:
+        log_to_web('⚠️ Counter readback did not match — the write may not have taken.')
+    record_operation('set_counter', 'success' if ok else 'fail', value=value, block=block.hex())
+    emit_action_complete('success' if ok else 'fail')
+
+
 def run_dump_tag() -> None:
     if not ensure_reader():
         record_operation('dump', 'fail', reason='reader_offline')
@@ -1354,6 +1402,15 @@ def handle_tag_info():
 @socketio.on('dump_tag')
 def handle_dump_tag():
     socketio.start_background_task(with_lock, run_dump_tag)
+
+
+@socketio.on('set_counter')
+def handle_set_counter(payload=None):
+    try:
+        value = int((payload or {}).get('value', 0))
+    except (TypeError, ValueError):
+        value = 0
+    socketio.start_background_task(with_lock, run_set_counter, value)
 
 
 @socketio.on('reconnect_reader')
