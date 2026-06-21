@@ -153,9 +153,9 @@ ISO15693_CMD_INVENTORY = 0x01
 ISO15693_CMD_READ_SINGLE_BLOCK = 0x20
 ISO15693_CMD_WRITE_SINGLE_BLOCK = 0x21
 # PN532Killer / MTools "Gen2 UID Changeable" ISO 15693 magic UID-set sequence:
-# two unaddressed custom frames carry the high and low halves of the new UID in
-# display order (MSB first). Reference: MTools/PN532Killer raw commands and the
-# Proxmark `hf 15 csetuid --v2` byte layout.
+# two unaddressed custom frames carry the new UID in wire order (LSB first).
+# 0x40 sets the first four wire bytes, 0x41 the last four. Reference: MTools/
+# PN532Killer raw commands and Proxmark `hf 15 csetuid --v2`.
 ISO15693_MAGIC_SET_UID_HIGH = bytes([0x02, 0xE0, 0x09, 0x40])
 ISO15693_MAGIC_SET_UID_LOW = bytes([0x02, 0xE0, 0x09, 0x41])
 # In an inventory request bit 6 is the Nb_slots flag: set it to run a single
@@ -614,9 +614,10 @@ class DirectSpiPN5180Iso15693Reader:
 
     def write_uid_backdoor(self, uid: bytes) -> None:
         uid = validate_uid(uid)
-        # Gen2 magic UID-set: high 4 bytes, then low 4 bytes (display order).
-        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_HIGH + uid[0:4]))
-        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_LOW + uid[4:8]))
+        # The Gen2 magic command stores the UID in wire order (LSB first).
+        wire = uid[::-1]
+        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_HIGH + wire[0:4]))
+        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_LOW + wire[4:8]))
 
 
 class PN5180Iso15693Reader:
@@ -709,9 +710,10 @@ class PN5180Iso15693Reader:
 
     def write_uid_backdoor(self, uid: bytes) -> None:
         uid = validate_uid(uid)
-        # Gen2 magic UID-set: high 4 bytes, then low 4 bytes (display order).
-        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_HIGH + uid[0:4]))
-        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_LOW + uid[4:8]))
+        # The Gen2 magic command stores the UID in wire order (LSB first).
+        wire = uid[::-1]
+        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_HIGH + wire[0:4]))
+        validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_LOW + wire[4:8]))
 
 
 def emit_action_complete(status: str) -> None:
