@@ -868,6 +868,37 @@ class HelperTests(unittest.TestCase):
             ''.join(block.hex() for block in app.CLEARED_DATA_BLOCKS),
         )
 
+    def test_run_dump_tag_auto_sizes_from_system_info(self):
+        class FakeReader:
+            label = 'fake'
+
+            def poll_uid(self):
+                return app.TARGET_UID
+
+            def read_system_info(self, _uid):
+                return {'block_count': 8, 'block_size': 4}
+
+            def read_block(self, _uid, index):
+                if index >= 8:  # a 64-block read would error past the real end
+                    raise RuntimeError('ISO 15693 tag returned error 0x0F')
+                return bytes([index, 0, 0, 0])
+
+            def read_block_security(self, _uid, _first, count):
+                return [False] * count
+
+        with (
+            patch.object(app, 'reader', FakeReader()),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_dump_tag()
+            record = app.operation_history[-1]
+
+        self.assertEqual(record['operation'], 'dump')
+        self.assertEqual(record['status'], 'success')
+        self.assertEqual(record['details']['read_errors'], [])
+        # Only the 8 real blocks were read, not the 64-block DNP default.
+        self.assertEqual(len(record['details']['data']), 8 * app.ISO15693_BLOCK_SIZE * 2)
+
     def test_run_set_counter_writes_counter_block_little_endian(self):
         class FakeReader:
             label = 'fake'
