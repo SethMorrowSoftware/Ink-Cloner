@@ -760,6 +760,63 @@ class HelperTests(unittest.TestCase):
         self.assertIn([0x09, 0x00, 0x02, 0xE0, 0x09, 0x40] + list(wire[0:4]), transfers)
         self.assertIn([0x09, 0x00, 0x02, 0xE0, 0x09, 0x41] + list(wire[4:8]), transfers)
 
+    def test_parse_iso15693_system_info_parses_all_fields(self):
+        wire = bytes([0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0])
+        response = bytes([0x00, 0x0F]) + wire + bytes([0x00, 0x05, 0x3F, 0x03, 0x8B])
+        info = app.parse_iso15693_system_info(response)
+        self.assertEqual(info['uid'], 'E0-07-81-6A-E3-2E-96-32')
+        self.assertEqual(info['dsfid'], '0x00')
+        self.assertEqual(info['afi'], '0x05')
+        self.assertEqual(info['block_count'], 64)
+        self.assertEqual(info['block_size'], 4)
+        self.assertEqual(info['ic_reference'], '0x8B')
+
+    def test_parse_iso15693_system_info_rejects_error_flag(self):
+        with self.assertRaises(RuntimeError):
+            app.parse_iso15693_system_info(bytes([0x01, 0x0F]))
+
+    def test_direct_spi_read_system_info_frame_and_fields(self):
+        wire = bytes([0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0])
+        sysinfo = [0x00, 0x0F] + list(wire) + [0x00, 0x00, 0x3F, 0x03, 0x8B]
+        fake_pigpio = self._build_fake_pigpio([
+            [0x01, 0, 0, 0],            # IRQ_STATUS: RX_IRQ set
+            [len(sysinfo), 0, 0, 0],    # RX_STATUS
+            sysinfo,                    # Get System Information response
+        ])
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            info = reader.read_system_info(bytes(range(8)))
+
+        self.assertEqual(info['block_count'], 64)
+        self.assertEqual(info['ic_reference'], '0x8B')
+        expected_frame = [0x09, 0x00, 0x22, 0x2B] + list(bytes(range(8))[::-1])
+        self.assertIn(expected_frame, fake_pigpio.pi_instance.transfers)
+
+    def test_run_tag_info_records_profile(self):
+        class FakeReader:
+            label = 'fake'
+
+            def poll_uid(self):
+                return app.TARGET_UID
+
+            def read_system_info(self, _uid):
+                return {
+                    'uid': 'E0-07-81-6A-E3-2E-96-32',
+                    'dsfid': '0x00', 'afi': '0x00',
+                    'block_count': 64, 'block_size': 4,
+                    'ic_reference': '0x8B', 'info_flags': '0x0F',
+                }
+
+        with (
+            patch.object(app, 'reader', FakeReader()),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_tag_info()
+            record = app.operation_history[-1]
+        self.assertEqual(record['operation'], 'tag_info')
+        self.assertEqual(record['status'], 'success')
+        self.assertEqual(record['details']['block_count'], 64)
+
 
 if __name__ == '__main__':
     unittest.main()
