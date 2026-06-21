@@ -53,11 +53,11 @@ class HelperTests(unittest.TestCase):
                 self.writes = []
                 self.transfers = []
                 self.reads = [
+                    [0x01, 0, 0, 0],  # IRQ_STATUS: RX_IRQ set (reception complete)
                     [10, 0, 0, 0],  # RX_STATUS for inventory response length
-                    [0, 0, 0, 0],  # IRQ_STATUS
                     [0x00, 0x00, 0x32, 0x96, 0x2E, 0xE3, 0x6A, 0x81, 0x07, 0xE0],
+                    [0x01, 0, 0, 0],  # IRQ_STATUS: RX_IRQ set
                     [1, 0, 0, 0],  # RX_STATUS for write response length
-                    [0, 0, 0, 0],  # IRQ_STATUS
                     [0x00],
                 ]
 
@@ -553,6 +553,57 @@ class HelperTests(unittest.TestCase):
             reset_writes.clear()
             reader._recover_if_busy_stuck()
         self.assertEqual(reset_writes, [])  # ready chip is not reset
+
+    def test_card_has_responded_requires_rx_irq(self):
+        # Bytes are present but RX_IRQ never fires: the frame is not yet complete,
+        # so the reader must not grab a (truncated) response.
+        class FakePi:
+            connected = True
+
+            def __init__(self):
+                self._pending = None
+
+            def spi_open(self, *_args):
+                return 7
+
+            def set_mode(self, *_args):
+                pass
+
+            def write(self, *_args):
+                pass
+
+            def read(self, _pin):
+                return 0
+
+            def spi_xfer(self, _handle, frame):
+                data = list(frame)
+                if data == [0x04, 0x02]:        # READ_REGISTER IRQ_STATUS
+                    self._pending = 'irq'
+                elif data == [0x04, 0x13]:      # READ_REGISTER RX_STATUS
+                    self._pending = 'rx'
+                elif len(data) == 4 and all(b == 0 for b in data):
+                    if self._pending == 'irq':
+                        return 4, bytearray([0x00, 0, 0, 0])   # RX_IRQ never set
+                    return 4, bytearray([10, 0, 0, 0])         # bytes present anyway
+                return len(data), bytearray(len(data))
+
+        class FakePigpioModule:
+            INPUT = 'INPUT'
+            OUTPUT = 'OUTPUT'
+
+            def __init__(self):
+                self.pi_instance = FakePi()
+
+            def pi(self):
+                return self.pi_instance
+
+        fake_pigpio = FakePigpioModule()
+        with (
+            patch.object(app, 'pigpio_module', fake_pigpio),
+            patch.object(app, 'PN5180_RESPONSE_TIMEOUT_SECONDS', 0.02),
+        ):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            self.assertFalse(reader._card_has_responded())
 
     def test_describe_reader_self_test_survives_busy_timeout(self):
         # A stuck BUSY line must not hang startup: self-test fails gracefully so
