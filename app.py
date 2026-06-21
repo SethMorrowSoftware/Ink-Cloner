@@ -469,14 +469,18 @@ class DirectSpiPN5180Iso15693Reader:
         return low_byte | (high_bit << 8)
 
     def _card_has_responded(self) -> bool:
+        # Wait for RX_IRQ (end of RF reception) before trusting the byte count.
+        # Reading RX_STATUS the instant any byte appears can grab the buffer
+        # mid-frame and return a truncated UID/response.
         deadline = time.monotonic() + PN5180_RESPONSE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
-            rx_status = self._read_register(0x13)  # RX_STATUS
-            self._read_register(0x02)  # IRQ_STATUS
-            self._bytes_in_card_buffer = self._rx_status_byte_count(rx_status)
-            if self._bytes_in_card_buffer > 0:
-                return True
-            time.sleep(0.005)
+            irq_status = self._read_register(0x02)  # IRQ_STATUS
+            if irq_status and (irq_status[0] & 0x01):  # RX_IRQ: reception complete
+                rx_status = self._read_register(0x13)  # RX_STATUS (count now final)
+                self._bytes_in_card_buffer = self._rx_status_byte_count(rx_status)
+                if self._bytes_in_card_buffer > 0:
+                    return True
+            time.sleep(0.002)
         return False
 
     def _recover_if_busy_stuck(self) -> None:
