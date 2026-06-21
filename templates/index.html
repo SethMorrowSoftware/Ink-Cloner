@@ -62,6 +62,7 @@
                     <input id="counterVal" type="number" min="0" max="65535" value="255" aria-label="Counter value"
                            style="flex:1 1 120px;border-radius:11px;border:1px solid var(--border);background:#020617;color:var(--text);padding:12px 14px;font-size:1rem">
                     <button id="setCounterBtn" class="btn">Set Counter (block 2)</button>
+                    <button id="lockBtn" class="btn" style="background:#7f1d1d">Lock to Master (permanent)</button>
                 </div>
                 <p class="help">Uses pn5180pi with raw ISO 15693 / NFC-V frames. UID backdoor writes are disabled unless the server is started with <code>ENABLE_UID_BACKDOOR=true</code>. Recent operation history is available at <code>/history.json</code>.</p>
 
@@ -75,7 +76,7 @@
 <script>
     const socket = io();
     const $ = id => document.getElementById(id);
-    const controls = ['burnBtn','scanBtn','verifyBtn','tagInfoBtn','dumpBtn','selfTestBtn','reconnectBtn','setCounterBtn'].map($);
+    const controls = ['burnBtn','scanBtn','verifyBtn','tagInfoBtn','dumpBtn','selfTestBtn','reconnectBtn','setCounterBtn','lockBtn'].map($);
 
     function busy(value){ controls.forEach(button => button && (button.disabled = value)); }
 
@@ -99,6 +100,7 @@
     $('tagInfoBtn').onclick = () => { busy(true); addLog('🪪 Reading tag profile...'); socket.emit('tag_info'); };
     $('dumpBtn').onclick = () => { busy(true); addLog('🗂️ Dumping all blocks...'); socket.emit('dump_tag'); };
     $('setCounterBtn').onclick = () => { busy(true); const v = parseInt($('counterVal').value, 10) || 0; addLog('🔢 Setting counter to ' + v + '...'); socket.emit('set_counter', { value: v }); };
+    $('lockBtn').onclick = () => { if (!confirm('Permanently lock this clone’s blocks to match the master? This cannot be undone.')) return; busy(true); addLog('🔒 Locking to master...'); socket.emit('lock_to_master'); };
     $('selfTestBtn').onclick = () => { busy(true); addLog('🔎 Running PN5180 self-test...'); socket.emit('self_test'); };
     $('reconnectBtn').onclick = () => { busy(true); addLog('🔄 Reconnecting reader...'); socket.emit('reconnect_reader'); };
     $('clearBtn').onclick = () => { $('console').innerHTML = '<div class="line-note">[Idle] Console cleared.</div>'; };

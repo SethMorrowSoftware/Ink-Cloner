@@ -152,6 +152,7 @@ ISO15693_FLAG_ADDRESS = 0x20
 ISO15693_CMD_INVENTORY = 0x01
 ISO15693_CMD_READ_SINGLE_BLOCK = 0x20
 ISO15693_CMD_WRITE_SINGLE_BLOCK = 0x21
+ISO15693_CMD_LOCK_BLOCK = 0x22
 ISO15693_CMD_GET_SYSTEM_INFO = 0x2B
 ISO15693_CMD_GET_MULTIPLE_BLOCK_SECURITY = 0x2C
 # PN532Killer / MTools "Gen2 UID Changeable" ISO 15693 magic UID-set sequence:
@@ -181,6 +182,11 @@ TARGET_UID = bytes([0xE0, 0x07, 0x81, 0x6A, 0xE3, 0x2E, 0x96, 0x32])
 # (observed decrement 0x0083=131 -> 0x0082=130 after one print). The block is
 # unlocked so the printer can update it; that also lets us write it for testing.
 PRINT_COUNTER_BLOCK = 2
+# Blocks the genuine master has write-locked. A clone with these unlocked is
+# rejected as invalid media, so a faithful clone must lock exactly this set.
+# (Blocks 0, 2 and 50-62 stay unlocked: the printer updates the counter and
+# signature there.)
+TARGET_LOCKED_BLOCKS = [1] + list(range(3, 50)) + [63]
 # Captured snapshot of the genuine master at count 130 (block 2 = 0x82 little-endian)
 # with its matching per-print signature (blocks 50-55). Burning this produces a
 # faithful clone of the master's current state to test whether the booth accepts it.
@@ -236,6 +242,9 @@ class Iso15693Reader(Protocol):
 
     def read_block_security(self, uid: bytes, first_block: int, block_count: int) -> list[bool]:
         """Return per-block locked flags via Get Multiple Block Security Status."""
+
+    def lock_block(self, uid: bytes, block_index: int) -> None:
+        """Permanently write-lock one ISO 15693 block."""
 
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         """Write one ISO 15693 memory block."""
@@ -675,6 +684,16 @@ class DirectSpiPN5180Iso15693Reader:
         ]) + uid[::-1] + bytes([first_block & 0xFF, (block_count - 1) & 0xFF])
         return parse_iso15693_block_security(self.exchange(frame), block_count)
 
+    def lock_block(self, uid: bytes, block_index: int) -> None:
+        uid = validate_uid(uid)
+        if not 0 <= block_index <= 0xFF:
+            raise ValueError(f'ISO 15693 block index out of range: {block_index}')
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_LOCK_BLOCK,
+        ]) + uid[::-1] + bytes([block_index])
+        validate_iso15693_response(self.exchange(frame))
+
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         uid = validate_uid(uid)
         data = validate_block_data(data)
@@ -783,6 +802,16 @@ class PN5180Iso15693Reader:
             ISO15693_CMD_GET_MULTIPLE_BLOCK_SECURITY,
         ]) + uid[::-1] + bytes([first_block & 0xFF, (block_count - 1) & 0xFF])
         return parse_iso15693_block_security(self.exchange(frame), block_count)
+
+    def lock_block(self, uid: bytes, block_index: int) -> None:
+        uid = validate_uid(uid)
+        if not 0 <= block_index <= 0xFF:
+            raise ValueError(f'ISO 15693 block index out of range: {block_index}')
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_LOCK_BLOCK,
+        ]) + uid[::-1] + bytes([block_index])
+        validate_iso15693_response(self.exchange(frame))
 
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         uid = validate_uid(uid)
@@ -1034,6 +1063,76 @@ def run_set_counter(value: int) -> None:
         log_to_web('⚠️ Counter readback did not match — the write may not have taken.')
     record_operation('set_counter', 'success' if ok else 'fail', value=value, block=block.hex())
     emit_action_complete('success' if ok else 'fail')
+
+
+def run_lock_to_master() -> None:
+    if not ensure_reader():
+        record_operation('lock_to_master', 'fail', reason='reader_offline')
+        return
+    lock_block = getattr(reader, 'lock_block', None)
+    read_block = getattr(reader, 'read_block', None)
+    if not callable(lock_block) or not callable(read_block):
+        log_to_web('ℹ️ Lock requires a backend with block lock/read support.')
+        record_operation('lock_to_master', 'skipped', backend=NFC_READER_BACKEND)
+        emit_action_complete('fail')
+        return
+
+    log_to_web('🔒 Lock to Master: PERMANENTLY locking blocks to match the genuine tag.')
+    uid = poll_for_iso15693_tag()
+    if not uid:
+        log_to_web('❌ No sticker detected.')
+        log_scan_diagnostics()
+        record_operation('lock_to_master', 'fail', reason='timeout')
+        emit_action_complete('fail')
+        return
+
+    # Safety: only lock a verified-correct clone, never the master or a bad copy.
+    if uid != TARGET_UID:
+        log_to_web(f'❌ Refusing to lock: UID {format_uid(uid)} is not the master {format_uid(TARGET_UID)}. Burn a clone first.')
+        record_operation('lock_to_master', 'fail', reason='uid_mismatch')
+        emit_action_complete('fail')
+        return
+    mismatched = []
+    for block_index, expected in enumerate(CLEARED_DATA_BLOCKS):
+        try:
+            if bytes(reader.read_block(uid, block_index)) != bytes(expected):
+                mismatched.append(block_index)
+        except Exception:
+            mismatched.append(block_index)
+    if mismatched:
+        log_to_web(f'❌ Refusing to lock: {len(mismatched)} block(s) do not match the master. Re-burn first.')
+        record_operation('lock_to_master', 'fail', reason='data_mismatch', mismatched_blocks=mismatched)
+        emit_action_complete('fail')
+        return
+
+    log_to_web(f'🔒 Locking {len(TARGET_LOCKED_BLOCKS)} blocks (1, 3-49, 63) — this cannot be undone...')
+    failed = []
+    for block_index in TARGET_LOCKED_BLOCKS:
+        try:
+            reader.lock_block(uid, block_index)
+        except Exception as exc:
+            failed.append(block_index)
+            log_to_web(f'   ⚠️ Block {block_index:02d} lock failed: {exc}')
+
+    confirmed = None
+    read_block_security = getattr(reader, 'read_block_security', None)
+    if callable(read_block_security):
+        try:
+            statuses = reader.read_block_security(uid, 0, len(CLEARED_DATA_BLOCKS))
+            now_locked = [index for index, locked in enumerate(statuses) if locked]
+            confirmed = now_locked == TARGET_LOCKED_BLOCKS
+            log_to_web(f'   • Now locked ({len(now_locked)}): {now_locked}')
+        except Exception as exc:
+            log_to_web(f'   • Could not read back lock status: {exc}')
+
+    if failed or confirmed is False:
+        log_to_web('❌ Lock incomplete — the tag may not support permanent locking (or not match the master). Try the booth anyway and report.')
+        status = 'fail'
+    else:
+        log_to_web('✅ Locked to match the master. Try it in the booth now.')
+        status = 'success'
+    record_operation('lock_to_master', status, failed_blocks=failed, confirmed=confirmed)
+    emit_action_complete(status)
 
 
 def run_dump_tag() -> None:
@@ -1414,6 +1513,11 @@ def handle_set_counter(payload=None):
     except (TypeError, ValueError):
         value = 0
     socketio.start_background_task(with_lock, run_set_counter, value)
+
+
+@socketio.on('lock_to_master')
+def handle_lock_to_master():
+    socketio.start_background_task(with_lock, run_lock_to_master)
 
 
 @socketio.on('reconnect_reader')
