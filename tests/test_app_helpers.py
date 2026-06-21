@@ -898,6 +898,74 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(record['status'], 'success')
         self.assertIn((app.PRINT_COUNTER_BLOCK, bytes([0xFF, 0x02, 0x00, 0x00])), fake.writes)
 
+    def test_direct_spi_lock_block_frame(self):
+        fake_pigpio = self._build_fake_pigpio([[0x01, 0, 0, 0], [1, 0, 0, 0], [0x00]])
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            reader.lock_block(bytes(range(8)), 7)
+        expected_frame = [0x09, 0x00, 0x22, 0x22] + list(bytes(range(8))[::-1]) + [7]
+        self.assertIn(expected_frame, fake_pigpio.pi_instance.transfers)
+
+    def test_run_lock_to_master_locks_target_blocks(self):
+        class FakeReader:
+            label = 'fake'
+
+            def __init__(self):
+                self.locked = []
+
+            def poll_uid(self):
+                return app.TARGET_UID
+
+            def read_block(self, _uid, index):
+                return app.CLEARED_DATA_BLOCKS[index]
+
+            def lock_block(self, _uid, index):
+                self.locked.append(index)
+
+            def read_block_security(self, _uid, _first, count):
+                return [index in self.locked for index in range(count)]
+
+        fake = FakeReader()
+        with (
+            patch.object(app, 'reader', fake),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_lock_to_master()
+            record = app.operation_history[-1]
+
+        self.assertEqual(record['operation'], 'lock_to_master')
+        self.assertEqual(record['status'], 'success')
+        self.assertEqual(fake.locked, app.TARGET_LOCKED_BLOCKS)
+
+    def test_run_lock_to_master_refuses_when_not_master(self):
+        other_uid = bytes([0xE0, 0x53, 0x01, 0x10, 0x65, 0x34, 0x8E, 0x18])
+
+        class FakeReader:
+            label = 'fake'
+
+            def __init__(self):
+                self.locked = []
+
+            def poll_uid(self):
+                return other_uid
+
+            def read_block(self, _uid, index):
+                return app.CLEARED_DATA_BLOCKS[index]
+
+            def lock_block(self, _uid, index):
+                self.locked.append(index)
+
+        fake = FakeReader()
+        with (
+            patch.object(app, 'reader', fake),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_lock_to_master()
+            record = app.operation_history[-1]
+
+        self.assertEqual(record['status'], 'fail')
+        self.assertEqual(fake.locked, [])  # nothing was locked
+
 
 if __name__ == '__main__':
     unittest.main()
