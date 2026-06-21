@@ -1011,6 +1011,41 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(record['status'], 'success')
         self.assertIn('iso14443a', record['details']['protocols'])
 
+    def test_direct_spi_mifare_authenticate_frame(self):
+        fake_pigpio = self._build_fake_pigpio([[0x00]])  # auth status byte = success
+        key = bytes.fromhex('FFFFFFFFFFFF')
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            ok = reader._mifare_authenticate(bytes([0x7D, 0xAE, 0x1E, 0x52]), 4, key, 0x60)
+        self.assertTrue(ok)
+        expected = [0x0C] + list(key) + [0x60, 4, 0x7D, 0xAE, 0x1E, 0x52]
+        self.assertIn(expected, fake_pigpio.pi_instance.transfers)
+
+    def test_run_dump_mifare_reports_sectors(self):
+        class FakeReader:
+            label = 'fake'
+
+            def dump_mifare_classic(self, sectors=16, keys=None):
+                return {
+                    'uid': '7D-AE-1E-52',
+                    'sectors': {
+                        0: {'key': 'ffffffffffff', 'key_type': 'A',
+                            'blocks': ['00' * 16, '11' * 16, '22' * 16, '33' * 16]},
+                    },
+                    'failed_sectors': [1],
+                }
+
+        with (
+            patch.object(app, 'reader', FakeReader()),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_dump_mifare()
+            record = app.operation_history[-1]
+
+        self.assertEqual(record['operation'], 'dump_mifare')
+        self.assertEqual(record['status'], 'success')
+        self.assertEqual(record['details']['opened_sectors'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()
