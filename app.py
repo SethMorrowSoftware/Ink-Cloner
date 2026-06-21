@@ -985,6 +985,67 @@ def run_tag_info() -> None:
     emit_action_complete('success')
 
 
+def run_dump_tag() -> None:
+    if not ensure_reader():
+        record_operation('dump', 'fail', reason='reader_offline')
+        return
+    read_block = getattr(reader, 'read_block', None)
+    if not callable(read_block):
+        log_to_web('ℹ️ Dump requires a backend with block-read support.')
+        record_operation('dump', 'skipped', backend=NFC_READER_BACKEND)
+        emit_action_complete('fail')
+        return
+
+    total_blocks = len(CLEARED_DATA_BLOCKS)
+    log_to_web(f'🗂️ Dumping all {total_blocks} blocks + lock status...')
+    uid = poll_for_iso15693_tag()
+    if not uid:
+        log_to_web('❌ No sticker detected.')
+        log_scan_diagnostics()
+        record_operation('dump', 'fail', reason='timeout')
+        emit_action_complete('fail')
+        return
+
+    log_to_web(f'🎯 UID: {format_uid(uid)}')
+    blocks: list[bytes] = []
+    read_errors: list[int] = []
+    for block_index in range(total_blocks):
+        try:
+            blocks.append(bytes(reader.read_block(uid, block_index)))
+        except Exception as exc:
+            blocks.append(b'')
+            read_errors.append(block_index)
+            log_to_web(f'   ⚠️ Block {block_index:02d} read failed: {exc}')
+    for row in range(0, total_blocks, 16):
+        cells = [
+            (blocks[i].hex() if blocks[i] else '??' * ISO15693_BLOCK_SIZE)
+            for i in range(row, min(row + 16, total_blocks))
+        ]
+        log_to_web(f'   {row:02d}: ' + ' '.join(cells))
+
+    locked_blocks: list[int] = []
+    read_block_security = getattr(reader, 'read_block_security', None)
+    if callable(read_block_security):
+        try:
+            statuses = reader.read_block_security(uid, 0, total_blocks)
+            locked_blocks = [index for index, locked in enumerate(statuses) if locked]
+            log_to_web(f'   • Locked blocks ({len(locked_blocks)}): {locked_blocks or "none"}')
+        except Exception as exc:
+            log_to_web(f'   • Lock status unavailable: {exc}')
+
+    status = 'fail' if read_errors else 'success'
+    record_operation(
+        'dump',
+        status,
+        uid=format_uid(uid),
+        data=''.join(block.hex() for block in blocks),
+        locked_blocks=locked_blocks,
+        read_errors=read_errors,
+    )
+    log_to_web('   • Full hex is also in /history.json. Dump before AND after one print to see what the booth changes.')
+    emit_action_complete(status)
+
+
 def run_verify() -> None:
     if not ensure_reader():
         record_operation('verify', 'fail', reason='reader_offline')
@@ -1288,6 +1349,11 @@ def handle_verify():
 @socketio.on('tag_info')
 def handle_tag_info():
     socketio.start_background_task(with_lock, run_tag_info)
+
+
+@socketio.on('dump_tag')
+def handle_dump_tag():
+    socketio.start_background_task(with_lock, run_dump_tag)
 
 
 @socketio.on('reconnect_reader')
