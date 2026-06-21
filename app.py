@@ -153,6 +153,7 @@ ISO15693_CMD_INVENTORY = 0x01
 ISO15693_CMD_READ_SINGLE_BLOCK = 0x20
 ISO15693_CMD_WRITE_SINGLE_BLOCK = 0x21
 ISO15693_CMD_GET_SYSTEM_INFO = 0x2B
+ISO15693_CMD_GET_MULTIPLE_BLOCK_SECURITY = 0x2C
 # PN532Killer / MTools "Gen2 UID Changeable" ISO 15693 magic UID-set sequence:
 # two unaddressed custom frames carry the new UID in wire order (LSB first).
 # 0x40 sets the first four wire bytes, 0x41 the last four. Reference: MTools/
@@ -225,6 +226,9 @@ class Iso15693Reader(Protocol):
 
     def read_system_info(self, uid: bytes) -> dict[str, Any]:
         """Read the tag's Get System Information (DSFID/AFI/memory/IC reference)."""
+
+    def read_block_security(self, uid: bytes, first_block: int, block_count: int) -> list[bool]:
+        """Return per-block locked flags via Get Multiple Block Security Status."""
 
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         """Write one ISO 15693 memory block."""
@@ -370,6 +374,17 @@ def parse_iso15693_system_info(response: bytes) -> dict[str, Any]:
         info['ic_reference'] = f'0x{response[index]:02X}'
         index += 1
     return info
+
+
+def parse_iso15693_block_security(response: bytes, block_count: int) -> list[bool]:
+    """Parse Get Multiple Block Security Status into a per-block locked flag list."""
+    validate_iso15693_response(response)
+    statuses = response[1:1 + block_count]
+    if len(statuses) < block_count:
+        raise RuntimeError(
+            f'block security response returned {len(statuses)} of {block_count} statuses'
+        )
+    return [bool(status & 0x01) for status in statuses]
 
 
 def validate_uid(uid: bytes) -> bytes:
@@ -645,6 +660,14 @@ class DirectSpiPN5180Iso15693Reader:
         ]) + uid[::-1]
         return parse_iso15693_system_info(self.exchange(frame))
 
+    def read_block_security(self, uid: bytes, first_block: int, block_count: int) -> list[bool]:
+        uid = validate_uid(uid)
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_GET_MULTIPLE_BLOCK_SECURITY,
+        ]) + uid[::-1] + bytes([first_block & 0xFF, (block_count - 1) & 0xFF])
+        return parse_iso15693_block_security(self.exchange(frame), block_count)
+
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         uid = validate_uid(uid)
         data = validate_block_data(data)
@@ -745,6 +768,14 @@ class PN5180Iso15693Reader:
             ISO15693_CMD_GET_SYSTEM_INFO,
         ]) + uid[::-1]
         return parse_iso15693_system_info(self.exchange(frame))
+
+    def read_block_security(self, uid: bytes, first_block: int, block_count: int) -> list[bool]:
+        uid = validate_uid(uid)
+        frame = bytes([
+            ISO15693_FLAG_DATA_RATE_HIGH | ISO15693_FLAG_ADDRESS,
+            ISO15693_CMD_GET_MULTIPLE_BLOCK_SECURITY,
+        ]) + uid[::-1] + bytes([first_block & 0xFF, (block_count - 1) & 0xFF])
+        return parse_iso15693_block_security(self.exchange(frame), block_count)
 
     def write_block(self, uid: bytes, block_index: int, data: bytes) -> None:
         uid = validate_uid(uid)
@@ -935,8 +966,22 @@ def run_tag_info() -> None:
     log_to_web(f"   • Memory: {info.get('block_count', 'n/a')} blocks x {info.get('block_size', 'n/a')} bytes")
     log_to_web(f"   • IC reference: {info.get('ic_reference', 'n/a')}")
     log_to_web(f"   • Info flags: {info.get('info_flags', 'n/a')}")
+
+    locked_blocks: list[int] = []
+    read_block_security = getattr(reader, 'read_block_security', None)
+    if callable(read_block_security):
+        try:
+            statuses = reader.read_block_security(uid, 0, len(CLEARED_DATA_BLOCKS))
+            locked_blocks = [index for index, locked in enumerate(statuses) if locked]
+            if locked_blocks:
+                log_to_web(f'   • Locked blocks ({len(locked_blocks)}): {locked_blocks}')
+            else:
+                log_to_web('   • Locked blocks: none (all blocks writable)')
+        except Exception as exc:
+            log_to_web(f'   • Block lock status unavailable: {exc}')
+
     log_to_web('   • Run this on the genuine master and the clone and compare the fields.')
-    record_operation('tag_info', 'success', **info)
+    record_operation('tag_info', 'success', locked_blocks=locked_blocks, **info)
     emit_action_complete('success')
 
 

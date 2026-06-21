@@ -817,6 +817,29 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(record['status'], 'success')
         self.assertEqual(record['details']['block_count'], 64)
 
+    def test_parse_iso15693_block_security_flags_locked_blocks(self):
+        response = bytes([0x00, 0x01, 0x00, 0x00, 0x00])  # flags + 4 status bytes
+        self.assertEqual(app.parse_iso15693_block_security(response, 4), [True, False, False, False])
+
+    def test_parse_iso15693_block_security_rejects_short(self):
+        with self.assertRaises(RuntimeError):
+            app.parse_iso15693_block_security(bytes([0x00, 0x01]), 4)
+
+    def test_direct_spi_read_block_security_frame_and_locks(self):
+        security = [0x00, 0x01, 0x00, 0x00, 0x00]  # flags + block0 locked, 1-3 open
+        fake_pigpio = self._build_fake_pigpio([
+            [0x01, 0, 0, 0],              # IRQ_STATUS: RX_IRQ set
+            [len(security), 0, 0, 0],     # RX_STATUS
+            security,                     # security status response
+        ])
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            locks = reader.read_block_security(bytes(range(8)), 0, 4)
+
+        self.assertEqual(locks, [True, False, False, False])
+        expected_frame = [0x09, 0x00, 0x22, 0x2C] + list(bytes(range(8))[::-1]) + [0x00, 0x03]
+        self.assertIn(expected_frame, fake_pigpio.pi_instance.transfers)
+
 
 if __name__ == '__main__':
     unittest.main()
