@@ -1299,8 +1299,8 @@ def run_dump_tag() -> None:
         emit_action_complete('fail')
         return
 
-    total_blocks = len(CLEARED_DATA_BLOCKS)
-    log_to_web(f'🗂️ Dumping all {total_blocks} blocks + lock status...')
+    default_blocks = len(CLEARED_DATA_BLOCKS)
+    log_to_web('🗂️ Dumping tag (auto-sizing from system info)...')
     uid = poll_for_iso15693_tag()
     if not uid:
         log_to_web('❌ No sticker detected.')
@@ -1310,19 +1310,45 @@ def run_dump_tag() -> None:
         return
 
     log_to_web(f'🎯 UID: {format_uid(uid)}')
+
+    # Ask the tag how big it actually is instead of assuming the 64-block DNP
+    # media layout. A generic NFC-V tag may have far fewer blocks, and reading
+    # past the end of memory returns per-block errors (e.g. 0x0F / 0x10).
+    total_blocks = default_blocks
+    read_system_info = getattr(reader, 'read_system_info', None)
+    if callable(read_system_info):
+        try:
+            info = reader.read_system_info(uid)
+            if info.get('block_count'):
+                total_blocks = int(info['block_count'])
+                log_to_web(
+                    f"   • Memory (system info): {total_blocks} blocks x "
+                    f"{info.get('block_size', ISO15693_BLOCK_SIZE)} bytes"
+                )
+        except Exception as exc:
+            log_to_web(f'   • System info unavailable ({exc}); assuming {total_blocks} blocks.')
+    log_to_web(f'   • Reading {total_blocks} blocks + lock status...')
+
     blocks: list[bytes] = []
     read_errors: list[int] = []
+    consecutive_failures = 0
     for block_index in range(total_blocks):
         try:
             blocks.append(bytes(reader.read_block(uid, block_index)))
+            consecutive_failures = 0
         except Exception as exc:
             blocks.append(b'')
             read_errors.append(block_index)
+            consecutive_failures += 1
             log_to_web(f'   ⚠️ Block {block_index:02d} read failed: {exc}')
-    for row in range(0, total_blocks, 16):
+            if consecutive_failures >= 4:
+                log_to_web('   ⚠️ Stopping after repeated read errors (tag smaller than reported).')
+                break
+    read_blocks = len(blocks)
+    for row in range(0, read_blocks, 16):
         cells = [
             (blocks[i].hex() if blocks[i] else '??' * ISO15693_BLOCK_SIZE)
-            for i in range(row, min(row + 16, total_blocks))
+            for i in range(row, min(row + 16, read_blocks))
         ]
         log_to_web(f'   {row:02d}: ' + ' '.join(cells))
 
