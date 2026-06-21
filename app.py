@@ -161,6 +161,13 @@ ISO15693_CMD_GET_MULTIPLE_BLOCK_SECURITY = 0x2C
 # PN532Killer raw commands and Proxmark `hf 15 csetuid --v2`.
 ISO15693_MAGIC_SET_UID_HIGH = bytes([0x02, 0xE0, 0x09, 0x40])
 ISO15693_MAGIC_SET_UID_LOW = bytes([0x02, 0xE0, 0x09, 0x41])
+
+# PN5180 LOAD_RF_CONFIG (TX, RX) index pairs per protocol/bitrate.
+RF_CONFIG_ISO15693 = (0x0D, 0x8D)
+RF_CONFIG_ISO14443A_106 = (0x00, 0x80)
+# PN5180 CRC config registers (bit 0 enables CRC).
+PN5180_REG_CRC_RX_CONFIG = 0x12
+PN5180_REG_CRC_TX_CONFIG = 0x19
 # In an inventory request bit 6 is the Nb_slots flag: set it to run a single
 # slot, which is the most reliable way to detect one sticker on the antenna.
 ISO15693_FLAG_NB_SLOTS_ONE = 0x20
@@ -259,6 +266,29 @@ def utc_now_iso() -> str:
 
 def format_uid(uid: bytes) -> str:
     return '-'.join(f'{byte:02X}' for byte in uid)
+
+
+def format_bytes(data: bytes) -> str:
+    """Hex-format a byte string of any length (e.g. a 4/7/10-byte ISO 14443 UID)."""
+    return '-'.join(f'{byte:02X}' for byte in data) if data else ''
+
+
+def guess_iso14443a_type(atqa: bytes, sak: int) -> str:
+    """Best-effort tag family from the ISO 14443-A ATQA/SAK."""
+    if sak & 0x04:
+        return 'incomplete (still in cascade)'
+    if sak & 0x20:
+        return 'ISO 14443-4 (DESFire / smartcard / NTAG I2C)'
+    known = {
+        0x00: 'MIFARE Ultralight / NTAG21x',
+        0x08: 'MIFARE Classic 1K',
+        0x09: 'MIFARE Mini',
+        0x10: 'MIFARE Plus 2K (SL2)',
+        0x11: 'MIFARE Plus 4K (SL2)',
+        0x18: 'MIFARE Classic 4K',
+        0x19: 'MIFARE Classic 2K',
+    }
+    return known.get(sak & 0x7F, f'unknown (SAK 0x{sak:02X})')
 
 
 def format_pn5180_version(value: Optional[bytes]) -> str:
@@ -711,6 +741,67 @@ class DirectSpiPN5180Iso15693Reader:
         wire = uid[::-1]
         validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_HIGH + wire[0:4]))
         validate_iso15693_response(self.exchange(ISO15693_MAGIC_SET_UID_LOW + wire[4:8]))
+
+    # --- ISO 14443-A (MIFARE / NTAG family) ---------------------------------
+    def _set_crc(self, register: int, enabled: bool) -> None:
+        if enabled:
+            self._send([0x01, register, 0x01, 0x00, 0x00, 0x00])   # OR  bit0
+        else:
+            self._send([0x02, register, 0xFE, 0xFF, 0xFF, 0xFF])   # AND ~bit0
+
+    def _arm_transceive(self) -> None:
+        self._send([0x00, 0x03, 0xFF, 0xFF, 0x0F, 0x00])  # clear IRQ status
+        self._send([0x02, 0x00, 0xF8, 0xFF, 0xFF, 0xFF])  # SYSTEM_CONFIG -> idle
+        self._send([0x01, 0x00, 0x03, 0x00, 0x00, 0x00])  # SYSTEM_CONFIG -> transceive
+
+    def _exchange_14443(self, frame: list[int], last_byte_bits: int = 0) -> bytes:
+        """One ISO 14443-A transceive; last_byte_bits<8 sends a short/partial frame."""
+        self._arm_transceive()
+        self._send([0x09, last_byte_bits & 0x07] + list(frame))  # SEND_DATA
+        if self._card_has_responded():
+            return bytes(self._read_data(self._bytes_in_card_buffer))
+        return b''
+
+    def detect_iso14443a(self) -> Optional[dict[str, Any]]:
+        """Activate one ISO 14443-A tag and return UID / ATQA / SAK / type."""
+        self._recover_if_busy_stuck()
+        self._send([0x11, *RF_CONFIG_ISO14443A_106])  # LOAD_RF_CONFIG
+        self._send([0x16, 0x00])  # RF_ON
+        try:
+            self._set_crc(PN5180_REG_CRC_TX_CONFIG, False)
+            self._set_crc(PN5180_REG_CRC_RX_CONFIG, False)
+            atqa = self._exchange_14443([0x26], last_byte_bits=7)  # REQA short frame
+            if len(atqa) < 2:
+                return None
+
+            cl1 = self._exchange_14443([0x93, 0x20])  # ANTICOLLISION CL1 -> uid0-3 + BCC
+            if len(cl1) < 5:
+                return None
+            self._set_crc(PN5180_REG_CRC_TX_CONFIG, True)
+            self._set_crc(PN5180_REG_CRC_RX_CONFIG, True)
+            sak_resp = self._exchange_14443([0x93, 0x70] + list(cl1[:5]))  # SELECT CL1
+            sak = sak_resp[0] if sak_resp else 0
+            uid = bytes(cl1[:4])
+
+            if sak & 0x04:  # cascade bit -> 7-byte UID, do CL2
+                uid_part1 = bytes(cl1[1:4])  # drop the 0x88 cascade tag
+                self._set_crc(PN5180_REG_CRC_TX_CONFIG, False)
+                self._set_crc(PN5180_REG_CRC_RX_CONFIG, False)
+                cl2 = self._exchange_14443([0x95, 0x20])
+                if len(cl2) >= 5:
+                    self._set_crc(PN5180_REG_CRC_TX_CONFIG, True)
+                    self._set_crc(PN5180_REG_CRC_RX_CONFIG, True)
+                    sak2 = self._exchange_14443([0x95, 0x70] + list(cl2[:5]))
+                    sak = sak2[0] if sak2 else sak
+                    uid = uid_part1 + bytes(cl2[:4])
+            return {
+                'uid': format_bytes(uid),
+                'atqa': bytes(atqa[:2]).hex(),
+                'sak': f'0x{sak:02X}',
+                'type': guess_iso14443a_type(bytes(atqa[:2]), sak),
+            }
+        finally:
+            self._send([0x17, 0x00])  # RF_OFF
 
 
 class PN5180Iso15693Reader:
@@ -1311,6 +1402,44 @@ def run_self_test() -> None:
     emit_action_complete(status)
 
 
+def run_identify() -> None:
+    if not ensure_reader():
+        record_operation('identify', 'fail', reason='reader_offline')
+        return
+    log_to_web('🔎 Identify: probing ISO 14443-A and ISO 15693...')
+    found: list[str] = []
+
+    detect_iso14443a = getattr(reader, 'detect_iso14443a', None)
+    if callable(detect_iso14443a):
+        try:
+            tag = reader.detect_iso14443a()
+            if tag:
+                log_to_web(
+                    f"   • ISO 14443-A: UID {tag['uid']} | ATQA {tag['atqa']} | "
+                    f"SAK {tag['sak']} | {tag['type']}"
+                )
+                found.append('iso14443a')
+        except Exception as exc:
+            log_to_web(f'   • ISO 14443-A probe error: {exc}')
+
+    try:
+        uid = reader.poll_uid()
+        if uid:
+            log_to_web(f'   • ISO 15693 / NFC-V: UID {format_uid(uid)}')
+            found.append('iso15693')
+    except Exception as exc:
+        log_to_web(f'   • ISO 15693 probe error: {exc}')
+
+    if found:
+        log_to_web(f'✅ Identify found: {", ".join(found)}.')
+        status = 'success'
+    else:
+        log_to_web('❌ No ISO 14443-A or ISO 15693 tag detected. Hold one tag flat on the antenna.')
+        status = 'fail'
+    record_operation('identify', status, protocols=found)
+    emit_action_complete(status)
+
+
 def run_tag_scan() -> None:
     if not ensure_reader():
         record_operation('scan_tag', 'fail', reason='reader_offline')
@@ -1484,6 +1613,11 @@ def handle_burn():
 @socketio.on('scan_tag')
 def handle_scan_tag():
     socketio.start_background_task(with_lock, run_tag_scan)
+
+
+@socketio.on('identify')
+def handle_identify():
+    socketio.start_background_task(with_lock, run_identify)
 
 
 @socketio.on('self_test')

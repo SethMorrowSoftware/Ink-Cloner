@@ -966,6 +966,51 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(record['status'], 'fail')
         self.assertEqual(fake.locked, [])  # nothing was locked
 
+    def test_guess_iso14443a_type(self):
+        self.assertIn('Classic 1K', app.guess_iso14443a_type(b'\x04\x00', 0x08))
+        self.assertIn('Ultralight', app.guess_iso14443a_type(b'\x44\x00', 0x00))
+        self.assertIn('14443-4', app.guess_iso14443a_type(b'\x44\x03', 0x20))
+
+    def test_direct_spi_detect_iso14443a_activates_and_returns_uid(self):
+        fake_pigpio = self._build_fake_pigpio([
+            [0x01, 0, 0, 0], [2, 0, 0, 0], [0x04, 0x00],                    # REQA -> ATQA
+            [0x01, 0, 0, 0], [5, 0, 0, 0], [0xDE, 0xAD, 0xBE, 0xEF, 0x22],  # anticoll -> UID+BCC
+            [0x01, 0, 0, 0], [1, 0, 0, 0], [0x08],                          # SELECT -> SAK
+        ])
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            tag = reader.detect_iso14443a()
+
+        self.assertEqual(tag['uid'], 'DE-AD-BE-EF')
+        self.assertEqual(tag['atqa'], '0400')
+        self.assertEqual(tag['sak'], '0x08')
+        self.assertIn('Classic 1K', tag['type'])
+        transfers = fake_pigpio.pi_instance.transfers
+        self.assertIn([0x09, 0x07, 0x26], transfers)                       # REQA (7-bit short frame)
+        self.assertIn([0x09, 0x00, 0x93, 0x20], transfers)                 # anticollision CL1
+        self.assertIn([0x09, 0x00, 0x93, 0x70, 0xDE, 0xAD, 0xBE, 0xEF, 0x22], transfers)  # SELECT CL1
+
+    def test_run_identify_reports_protocols(self):
+        class FakeReader:
+            label = 'fake'
+
+            def detect_iso14443a(self):
+                return {'uid': 'DE-AD-BE-EF', 'atqa': '0400', 'sak': '0x08', 'type': 'MIFARE Classic 1K'}
+
+            def poll_uid(self):
+                return None
+
+        with (
+            patch.object(app, 'reader', FakeReader()),
+            patch.object(app, 'operation_history', []),
+        ):
+            app.run_identify()
+            record = app.operation_history[-1]
+
+        self.assertEqual(record['operation'], 'identify')
+        self.assertEqual(record['status'], 'success')
+        self.assertIn('iso14443a', record['details']['protocols'])
+
 
 if __name__ == '__main__':
     unittest.main()

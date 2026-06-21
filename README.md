@@ -1,8 +1,24 @@
-# Photobooth Ink Cloner
+# PN5180 Workbench
 
-Professional Flask + Socket.IO **PN5180** console with **ink cloning as the primary workflow** and a focused operator UI for authorized ISO 15693 / NFC-V sticker management.
+Flask + Socket.IO **PN5180** console on a Raspberry Pi: a growing multi-protocol
+NFC/RFID toolkit. It started as a focused ISO 15693 / NFC-V **ink-clone** workflow
+(still included) and is expanding to cover the PN5180's full feature set.
 
-## Core focus
+## Capabilities
+- **Identify** — one tap detects and identifies a tag in the field (ISO 14443-A and
+  ISO 15693 / NFC-V today; FeliCa + ISO 14443-B next), reporting UID, ATQA/SAK and type.
+- **ISO 15693 / NFC-V** — inventory, read/write/lock blocks, Get System Information,
+  block security status, dump, verify, UID rewrite (Gen2 magic), and the DNP ink-clone
+  workflow.
+- **ISO 14443-A** — REQA → anticollision → SELECT (with cascade for 7-byte UIDs);
+  MIFARE/NTAG read-write is on the roadmap.
+- PN5180 **Self-Test** (firmware/EEPROM identity), reader reconnect, history/audit at
+  `/history.json`, health at `/healthz`.
+
+> Roadmap: ISO 14443-A MIFARE/NTAG read-write, FeliCa & ISO 14443-B, and a low-level lab
+> (register/EEPROM access, RF-config picker, raw transceive console).
+
+## Core focus (ISO 15693 ink clone)
 - Guided **Ink Clone Burn** workflow with step-by-step console logs and completion status.
 - PN5180-first NFC-V UID scan and ISO 15693 block writes.
 - **PN5180 Self-Test** that reads the chip's firmware/product/EEPROM identity so you can tell a wiring/SPI problem apart from an RF/sticker problem.
