@@ -285,7 +285,9 @@ class HelperTests(unittest.TestCase):
             reader = app.PN5180Iso15693Reader()
             reader.write_uid_backdoor(app.TARGET_UID)
 
-        self.assertEqual(reader.device.frames[0], bytes([0x02, 0xB4, 0x00]) + app.TARGET_UID)
+        # Gen2 magic UID-set: high 4 bytes via 0x40, low 4 bytes via 0x41 (display order).
+        self.assertEqual(reader.device.frames[0], bytes([0x02, 0xE0, 0x09, 0x40]) + app.TARGET_UID[0:4])
+        self.assertEqual(reader.device.frames[1], bytes([0x02, 0xE0, 0x09, 0x41]) + app.TARGET_UID[4:8])
 
 
     def test_reset_pn5180_hardware_pulses_configured_reset_pin_via_pigpio(self):
@@ -742,6 +744,19 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(record['status'], 'fail')          # not an exact clone
         self.assertFalse(record['details']['uid_matches'])
         self.assertEqual(record['details']['mismatched_blocks'], [])  # but data is faithful
+
+    def test_direct_spi_write_uid_backdoor_sends_gen2_magic_frames(self):
+        fake_pigpio = self._build_fake_pigpio([
+            [0x01, 0, 0, 0], [1, 0, 0, 0], [0x00],   # exchange 1: high UID half
+            [0x01, 0, 0, 0], [1, 0, 0, 0], [0x00],   # exchange 2: low UID half
+        ])
+        with patch.object(app, 'pigpio_module', fake_pigpio):
+            reader = app.DirectSpiPN5180Iso15693Reader()
+            reader.write_uid_backdoor(app.TARGET_UID)
+
+        transfers = fake_pigpio.pi_instance.transfers
+        self.assertIn([0x09, 0x00, 0x02, 0xE0, 0x09, 0x40] + list(app.TARGET_UID[0:4]), transfers)
+        self.assertIn([0x09, 0x00, 0x02, 0xE0, 0x09, 0x41] + list(app.TARGET_UID[4:8]), transfers)
 
 
 if __name__ == '__main__':
