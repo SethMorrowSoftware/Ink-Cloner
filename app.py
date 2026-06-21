@@ -779,11 +779,34 @@ class DirectSpiPN5180Iso15693Reader:
             return bytes(self._read_data(self._bytes_in_card_buffer))
         return b''
 
+    def _wake_iso14443a(self, wakeup: int, attempts: int = 4) -> bytes:
+        """Send REQA/WUPA a few times; a just-powered card can miss the first one."""
+        atqa = b''
+        for _ in range(attempts):
+            atqa = self._exchange_14443([wakeup], last_byte_bits=7)  # short frame
+            if len(atqa) >= 2:
+                return atqa
+            time.sleep(0.005)
+        return atqa
+
+    def _rf_field_on_iso14443a(self) -> None:
+        """Load the 14443-A RF config, switch the field on, and let it settle.
+
+        A card needs a few ms after the field powers up before it answers REQA;
+        sending the first short frame too early intermittently misses the tag,
+        which showed up as a dump failing to activate a card that Identify had
+        just read.
+        """
+        self._recover_if_busy_stuck()
+        self._send([0x11, *RF_CONFIG_ISO14443A_106])  # LOAD_RF_CONFIG
+        self._send([0x16, 0x00])  # RF_ON
+        time.sleep(0.01)  # field stabilize + card power-up (ISO 14443 guard time)
+
     def _activate_iso14443a(self, wakeup: int = 0x26) -> Optional[dict[str, Any]]:
         """REQA/WUPA -> anticollision -> SELECT (with cascade). Returns raw uid/atqa/sak."""
         self._set_crc(PN5180_REG_CRC_TX_CONFIG, False)
         self._set_crc(PN5180_REG_CRC_RX_CONFIG, False)
-        atqa = self._exchange_14443([wakeup], last_byte_bits=7)  # REQA/WUPA short frame
+        atqa = self._wake_iso14443a(wakeup)
         if len(atqa) < 2:
             return None
         cl1 = self._exchange_14443([0x93, 0x20])  # ANTICOLLISION CL1 -> uid0-3 + BCC
@@ -809,9 +832,7 @@ class DirectSpiPN5180Iso15693Reader:
 
     def detect_iso14443a(self) -> Optional[dict[str, Any]]:
         """Activate one ISO 14443-A tag and return UID / ATQA / SAK / type."""
-        self._recover_if_busy_stuck()
-        self._send([0x11, *RF_CONFIG_ISO14443A_106])  # LOAD_RF_CONFIG
-        self._send([0x16, 0x00])  # RF_ON
+        self._rf_field_on_iso14443a()
         try:
             tag = self._activate_iso14443a(0x26)
             if not tag:
@@ -847,12 +868,10 @@ class DirectSpiPN5180Iso15693Reader:
     def dump_mifare_classic(self, sectors: int = 16, keys: Optional[list[bytes]] = None) -> Optional[dict[str, Any]]:
         """Authenticate each sector with default keys and read its blocks."""
         keys = keys or MIFARE_DEFAULT_KEYS
-        self._recover_if_busy_stuck()
-        self._send([0x11, *RF_CONFIG_ISO14443A_106])
-        self._send([0x16, 0x00])  # RF_ON
+        self._rf_field_on_iso14443a()
         result: dict[str, Any] = {'uid': None, 'sectors': {}, 'failed_sectors': []}
         try:
-            first = self._activate_iso14443a(0x26)
+            first = self._activate_iso14443a(0x52)  # WUPA: wake from idle or halt
             if not first:
                 return None
             uid = first['uid'][:4]
